@@ -6,6 +6,11 @@ Basedir=$PWD
 Card_id=
 
 declare -i Step=0
+declare -A Skip_steps=()
+# These are tied to the --start-step / --end-step options
+Start_step=
+End_step=
+
 # TODO: Consider adding defaults for all...
 declare -A Opts=(
 	[extra-certs-dir]=/usr/ssl/certs
@@ -24,6 +29,7 @@ declare -a Steps=(
 	create_certs
 	build_curl
 	configure_openssl_conf
+	build_git
 )
 
 on_exit() {
@@ -37,11 +43,21 @@ on_exit() {
 }
 
 run() {
-	# Note: Initial Step set in set_start_step.
-	for (( ; Step < ${#Steps[@]}; Step++)); do
-		log "Beginning step $Step: ${Steps[$Step]}"
-		${Steps[$Step]}
-		log "Finished step  $Step: ${Steps[$Step]}"
+	if [[ -n $Start_step ]]; then started=no; else started=yes; fi
+	for step in "${Steps[@]}"; do
+		if [[ $started == no && $step == $Start_step ]]; then
+			started=yes
+		fi
+		# If we've passed start step (or none given) and we're not skipping...
+		if [[ $started == yes && -n ${Skip_steps[$step]} ]]; then
+			log "Beginning step $Step: ${Steps[$Step]}"
+			${Steps[$Step]}
+			log "Finished step  $Step: ${Steps[$Step]}"
+		fi
+		if [[ -n $End_step && $step == $End_step ]]; then
+			log "Exiting due to --end-step $End_step"
+			exit 0
+		fi
 	done
 }
 
@@ -66,31 +82,37 @@ error() {
 	exit 1
 }
 
+# TODO: This has been obsoleted by --start-step/--end-step options: remove...
 set_start_step() {
-	if [ "${Opts[start-at]}" ]; then
+	if [ "${Opts[start-step]}" ]; then
 		idx=0
 		for step in "${Steps[@]}"; do
-			if [[ "$step" == "${Opts[start-at]}" ]]; then
+			if [[ "$step" == "${Opts[start-step]}" ]]; then
 				Step=$idx
 				return
 			fi
 			((++idx))
 		done
-		error --usage "Error: Unknown step specified with --start-at: \`${Opts[start-at]}'"
+		error --usage "Error: Unknown step specified with --start-step: \`${Opts[start-step]}'"
 	fi
 }
 
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
-	eval set -- $(getopt -os: -lstart-at:,extra-certs-dir:,skip-cygwin-install,no-install -- "$@")
+	eval set -- $(getopt -os: -lstart-step:,end-step:,skip-step:,extra-certs-dir:,skip-cygwin-install,no-install -- "$@")
 	while (($#)); do
 		v="$1"
 		shift
 		case $v in
-			-s | --start-at) Opts[start-at]="$1"; shift;;
-			--foo) Opts[foo]="$1"; shift;;
+			-s | --start-step) Start_step=$1; shift;;
+			--end-step) End_step=$1; shift;;
+			--skip-step)
+				# Add to hash of steps to skip.
+				Skip_steps["$1"]=yes
+				shift;;
 			--extra-certs-dir) Opts[extra-certs-dir]="$1"; shift;;
 			--openssl-conf) Opts[openssl-conf]="$1"; shift;;
+			# TODO: Perhaps just use the --skip-step mechanism internally.
 			--skip-cygwin-install) Opts[skip-cygwin-install]=yes;;
 			--no-install) Opts[make-install]="echo skipping install...";;
 		esac
@@ -167,6 +189,7 @@ create_certs() {
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
 	done >"${Opts[extra-certs-dir]}/${Cfg[ca-bundle-name]}.pem"
+	# TODO: Perhaps make the above just a full path.
 }
 build_curl() {
 	pushd curl
@@ -176,6 +199,7 @@ build_curl() {
 	popd
 }
 configure_openssl_conf() {
+	# Important Note: install_env_script will add the env var curl uses to find and load this.
 	cat <<-'eof' > "${Opts[openssl-conf]}"
 	openssl_conf = openssl_def
 	[openssl_def]
@@ -191,7 +215,28 @@ configure_openssl_conf() {
 	distinguished_name = req_distinguished_name
 	[req_distinguished_name]
 	eof
+}
+build_git() {
+	patch -u -p0 < git.patch
+	# Note: Git has no configure script.
+	NO_R_TO_GCC_LINKER=1 CURLDIR=/usr/local make -C git prefix=/usr/local all ${Opts[no-install]:-install}
+}
+install_env_script() {
+	# TODO: Any reason to make this configurable?
+	# TODO: Consider putting the cac id detection there also (in case slot id moves)...
+	cat <<-eof >/etc/profile.d/cac-enabled-git.sh
+	#! /bin/bash
+	if [[ $(uname -o) == Cygwin ]]; then
+		# Add environment vars needed for CAC-enabled Git
+		GIT_SSL_CERT=slot_01-id_$Card_id
+		GIT_SSL_KEY=slot_01-id_$Card_id
+		GIT_SSL_CAINFO=${Opts[extra-certs-dir]}/${Cfg[ca-bundle-name]}.pem
+		GIT_SSL_ENGINE=pkcs11
+		GIT_SSL_KEYTYPE=ENG
+		GIT_SSL_CERTTYPE=ENG
 
+	fi
+	eof
 }
 
 # Fail on error with indication of last step completed.
@@ -200,7 +245,7 @@ set -e
 
 trap on_exit EXIT
 process_opt "$@"
-set_start_step
+#set_start_step
 run
 
 # vim:ts=4:sw=4:tw=120
