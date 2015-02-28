@@ -1,0 +1,66 @@
+--- git/http.c.orig	2015-02-26 08:09:14.879850700 -0600
++++ git/http.c	2015-02-26 16:47:18.067707400 -0600
+@@ -51,6 +51,9 @@
+ struct credential http_auth = CREDENTIAL_INIT;
+ static int http_proactive_auth;
+ static const char *user_agent;
++static const char *ssl_keytype;
++static const char *ssl_certtype;
++static const char *ssl_engine;
+ 
+ #if LIBCURL_VERSION_NUM >= 0x071700
+ /* Use CURLOPT_KEYPASSWD as is */
+@@ -252,6 +255,12 @@
+ 
+ 	if (!strcmp("http.useragent", var))
+ 		return git_config_string(&user_agent, var, value);
++	if (!strcmp("http.sslkeytype", var))
++		return git_config_string(&ssl_keytype, var, value);
++	if (!strcmp("http.sslcerttype", var))
++		return git_config_string(&ssl_certtype, var, value);
++	if (!strcmp("http.sslengine", var))
++		return git_config_string(&ssl_engine, var, value);
+ 
+ 	/* Fall back on the default ones */
+ 	return git_default_config(var, value, cb);
+@@ -408,6 +417,17 @@
+ 		curl_easy_setopt(result, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
+ 	}
+ 
++	/* Adding setting of engine-related curl SSL options. */
++	if (ssl_engine != NULL) {
++		curl_easy_setopt(result, CURLOPT_SSLENGINE, ssl_engine);
++		curl_easy_setopt(result, CURLOPT_SSLENGINE_DEFAULT, 1L);
++	}
++
++	if (ssl_keytype != NULL)
++		curl_easy_setopt(result, CURLOPT_SSLKEYTYPE, ssl_keytype);
++	if (ssl_certtype != NULL)
++		curl_easy_setopt(result, CURLOPT_SSLCERTTYPE, ssl_certtype);
++
+ 	set_curl_keepalive(result);
+ 
+ 	return result;
+@@ -502,7 +522,10 @@
+ 		    starts_with(url, "https://"))
+ 			ssl_cert_password_required = 1;
+ 	}
+-
++	/* Added environment variables for expanded engine-related options. */
++	set_from_env(&ssl_keytype, "GIT_SSL_KEYTYPE");
++	set_from_env(&ssl_certtype, "GIT_SSL_CERTTYPE");
++	set_from_env(&ssl_engine, "GIT_SSL_ENGINE");
+ #ifndef NO_CURL_EASY_DUPHANDLE
+ 	curl_default = get_curl_handle();
+ #endif
+--- git/prompt.c.orig	2015-02-26 16:39:49.891073200 -0600
++++ git/prompt.c	2015-02-26 16:39:55.933418800 -0600
+@@ -45,7 +45,7 @@
+ {
+ 	char *r = NULL;
+ 
+-	if (flags & PROMPT_ASKPASS) {
++	if (!git_env_bool("GIT_INHIBIT_ASKPASS", 0) && flags & PROMPT_ASKPASS) {
+ 		const char *askpass;
+ 
+ 		askpass = getenv("GIT_ASKPASS");

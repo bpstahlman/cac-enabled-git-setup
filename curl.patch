@@ -1,0 +1,35 @@
+--- curl/lib/easy.c.orig	2015-02-25 10:25:12.505452200 -0600
++++ curl/lib/easy.c	2015-02-25 10:26:35.904222300 -0600
+@@ -947,6 +947,18 @@
+                              data->state.resolver))
+     goto fail;
+ 
++  /* If set, clone the handle to the engine being used. */
++#if defined(USE_SSLEAY) && defined(HAVE_OPENSSL_ENGINE_H)
++  if (data->state.engine) {
++    /* state.engine existing means curl_ossl_set_engine was
++    * previously successful. Because curl_ossl_set_engine worked,
++    * we can query the already-set engine for that handle and use
++    * that to increment a reference:
++    */
++    Curl_ssl_set_engine(outcurl, ENGINE_get_id(data->state.engine));
++  }
++#endif /* USE_SSLEAY */
++
+   Curl_convert_setup(outcurl);
+ 
+   outcurl->magic = CURLEASY_MAGIC_NUMBER;
+--- curl/lib/vtls/openssl.c.orig	2015-02-25 10:22:35.120450300 -0600
++++ curl/lib/vtls/openssl.c	2015-02-25 10:23:47.825608800 -0600
+@@ -761,6 +761,11 @@
+   /* Lets get nice error messages */
+   SSL_load_error_strings();
+ 
++  /* Load config file */
++  OPENSSL_load_builtin_modules();
++  if (CONF_modules_load_file(getenv("OPENSSL_CONF"), NULL, 0) <= 0)
++    return 0;
++
+   /* Init the global ciphers and digests */
+   if(!SSLeay_add_ssl_algorithms())
+     return 0;
