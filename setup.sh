@@ -4,8 +4,10 @@
 Basedir=$PWD
 # This will be detected and set in detect_cac_card.
 Card_id=
+# Facilitate skipping install step when --no-install specified
+Make_install=
 
-declare -i Step=0
+declare -i Step_idx=0
 declare -A Skip_steps=()
 # These are tied to the --start-step / --end-step options
 Start_step=
@@ -13,14 +15,11 @@ End_step=
 
 # TODO: Consider adding defaults for all...
 declare -A Opts=(
-	[extra-certs-dir]=/usr/ssl/certs
-	[make-install]="make install"
+	[ca-bundle-dir]=/usr/ssl/certs
+	[ca-bundle-name]=ca-bundle-plus-dod-root
 	[openssl-conf]=/usr/ssl/pkcs11-openssl.cnf
 )
-# Note: Cfg is less likely to need changing by end-user; of course, we could always move things from here to Opts
-declare -A Cfg=(
-	[ca-bundle-name]=ca-bundle-plus-dod-root
-)
+
 declare -a Steps=(
 	install_cyg_pkg
 	detect_cac_card
@@ -30,6 +29,7 @@ declare -a Steps=(
 	build_curl
 	configure_openssl_conf
 	build_git
+	install_env_script
 )
 
 on_exit() {
@@ -37,7 +37,7 @@ on_exit() {
 		echo "Success!"
 	else
 		echo "Setup aborted with error! Check stdout for details."
-		echo "After resolving any issues, resume setup by running ./setup -s ${Steps[$Step]}"
+		echo "After resolving any issues, resume setup by running ./setup -s $"
 	fi
 	cd "$Basedir"
 }
@@ -50,14 +50,16 @@ run() {
 		fi
 		# If we've passed start step (or none given) and we're not skipping...
 		if [[ $started == yes && -n ${Skip_steps[$step]} ]]; then
-			log "Beginning step $Step: ${Steps[$Step]}"
-			${Steps[$Step]}
-			log "Finished step  $Step: ${Steps[$Step]}"
+			log "Starting step #$Step_idx: $step"
+			${Opts[no-execute]:+"echo Simulating step"} nostep #$step
+			log "Finished step #$Step_idx: $step"
 		fi
 		if [[ -n $End_step && $step == $End_step ]]; then
-			log "Exiting due to --end-step $End_step"
+			log "Exiting due to --end-step '$End_step'"
+			((++Step_idx))
 			exit 0
 		fi
+		((++Step_idx))
 	done
 }
 
@@ -82,39 +84,33 @@ error() {
 	exit 1
 }
 
-# TODO: This has been obsoleted by --start-step/--end-step options: remove...
-set_start_step() {
-	if [ "${Opts[start-step]}" ]; then
-		idx=0
-		for step in "${Steps[@]}"; do
-			if [[ "$step" == "${Opts[start-step]}" ]]; then
-				Step=$idx
-				return
-			fi
-			((++idx))
-		done
-		error --usage "Error: Unknown step specified with --start-step: \`${Opts[start-step]}'"
-	fi
-}
-
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
-	eval set -- $(getopt -os: -lstart-step:,end-step:,skip-step:,extra-certs-dir:,skip-cygwin-install,no-install -- "$@")
+	# TODO: Perhaps put these in array, at least...
+	longs=(start-step: end-step: skip-step:
+		ca-bundle-dir: ca-bundle-name: openssl-conf:
+		skip-cygwin-install no-install)
+	eval set -- $(getopt -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
 	while (($#)); do
-		v="$1"
+		v=$1
 		shift
 		case $v in
 			-s | --start-step) Start_step=$1; shift;;
 			--end-step) End_step=$1; shift;;
 			--skip-step)
 				# Add to hash of steps to skip.
-				Skip_steps["$1"]=yes
+				# Note: Seems to be some weirdness with getopt handling of multiples when no short opts specified.
+				# Workaround: Configure at least on short opt (with -o).
+				Skip_steps[$1]=yes
 				shift;;
-			--extra-certs-dir) Opts[extra-certs-dir]="$1"; shift;;
-			--openssl-conf) Opts[openssl-conf]="$1"; shift;;
+			--ca-bundle-dir) Opts[ca-bundle-dir]=$1; shift;;
+			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
+			--openssl-conf) Opts[openssl-conf]=$1; shift;;
 			# TODO: Perhaps just use the --skip-step mechanism internally.
 			--skip-cygwin-install) Opts[skip-cygwin-install]=yes;;
-			--no-install) Opts[make-install]="echo skipping install...";;
+			--no-install)
+				Opts[no-install]=yes
+				Make_install="echo skipping install...";;
 		esac
 	done
 }
@@ -180,7 +176,7 @@ build_opensc() {
 		# TODO: Make sure error handled as desired (with effective popd).
 		# simulate error somehow to test...
 		# TEMP DEBUG - Don't really install...
-		./bootstrap && ./configure && make && ${Opts[make-install]} && popd
+		./bootstrap && ./configure && make && $Make_install && popd
 	done
 }
 create_certs() {
@@ -188,14 +184,14 @@ create_certs() {
 	url=http://dodpki.c3pki.chamb.disa.mil
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
-	done >"${Opts[extra-certs-dir]}/${Cfg[ca-bundle-name]}.pem"
+	done >"${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem"
 	# TODO: Perhaps make the above just a full path.
 }
 build_curl() {
 	pushd curl
 	patch -u -p0 < curl.patch
 	# Note: curl from github doesn't come with a configure script.
-	./buildconf && ./configure --with-ca-bundle="${Opts[extra-certs-dir]}/${Cfg[ca-bundle-name]}" && make && ${Opts[make-install]}
+	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem" && make && $Make_install
 	popd
 }
 configure_openssl_conf() {
@@ -228,13 +224,12 @@ install_env_script() {
 	#! /bin/bash
 	if [[ $(uname -o) == Cygwin ]]; then
 		# Add environment vars needed for CAC-enabled Git
-		GIT_SSL_CERT=slot_01-id_$Card_id
-		GIT_SSL_KEY=slot_01-id_$Card_id
-		GIT_SSL_CAINFO=${Opts[extra-certs-dir]}/${Cfg[ca-bundle-name]}.pem
-		GIT_SSL_ENGINE=pkcs11
-		GIT_SSL_KEYTYPE=ENG
-		GIT_SSL_CERTTYPE=ENG
-
+		export GIT_SSL_CERT=slot_01-id_$Card_id
+		export GIT_SSL_KEY=slot_01-id_$Card_id
+		export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem
+		export GIT_SSL_ENGINE=pkcs11
+		export GIT_SSL_KEYTYPE=ENG
+		export GIT_SSL_CERTTYPE=ENG
 	fi
 	eof
 }
