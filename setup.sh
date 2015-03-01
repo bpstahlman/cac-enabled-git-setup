@@ -2,10 +2,12 @@
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
+# Make sure we have an unmodified git we can use to clone source repos.
+Sys_git=/usr/bin/git
 # This will be detected and set in detect_cac_card.
 Card_id=
 # Facilitate skipping install step when --no-install specified
-Make_install=
+Make_install="make install"
 
 declare -i Step_idx=0
 declare -A Skip_steps=()
@@ -13,7 +15,7 @@ declare -A Skip_steps=()
 Start_step=
 End_step=
 
-# TODO: Consider adding defaults for all...
+# TODO: Consider adding defaults for all... For now, missing options assumed to be unset.
 declare -A Opts=(
 	[ca-bundle-dir]=/usr/ssl/certs
 	[ca-bundle-name]=ca-bundle-plus-dod-root
@@ -22,7 +24,6 @@ declare -A Opts=(
 
 declare -a Steps=(
 	install_cyg_pkg
-	detect_cac_card
 	download_source
 	build_opensc
 	create_certs
@@ -37,22 +38,24 @@ on_exit() {
 		echo "Success!"
 	else
 		echo "Setup aborted with error! Check stdout for details."
-		echo "After resolving any issues, resume setup by running ./setup -s $"
+		echo "After resolving any issues, resume setup by running ./setup -s ${Steps[$Step_idx]}"
 	fi
 	cd "$Basedir"
 }
 
+# Run all steps, starting with the first (or the one specified by --start-step), and ending with the last (or the one
+# specified with --end-step), skipping any specified by options such as --skip-step.
 run() {
-	if [[ -n $Start_step ]]; then started=no; else started=yes; fi
+	if [[ -n "$Start_step" ]]; then started=no; else started=yes; fi
 	for step in "${Steps[@]}"; do
 		if [[ $started == no && $step == $Start_step ]]; then
 			started=yes
 		fi
 		# If we've passed start step (or none given) and we're not skipping...
-		if [[ $started == yes && -n ${Skip_steps[$step]} ]]; then
-			log "Starting step #$Step_idx: $step"
-			${Opts[no-execute]:+"echo Simulating step"} nostep #$step
-			log "Finished step #$Step_idx: $step"
+		if [[ $started == yes && -z ${Skip_steps[$step]} ]]; then
+			log "Starting step #$((Step_idx + 1)): $step"
+			${Opts[no-execute]:+echo Simulating step} $step
+			log "Finished step #$((Step_idx + 1)): $step"
 		fi
 		if [[ -n $End_step && $step == $End_step ]]; then
 			log "Exiting due to --end-step '$End_step'"
@@ -87,9 +90,12 @@ error() {
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
 	# TODO: Perhaps put these in array, at least...
-	longs=(start-step: end-step: skip-step:
+	longs=(
+		start-step: end-step: skip-step:
 		ca-bundle-dir: ca-bundle-name: openssl-conf:
-		skip-cygwin-install no-install)
+		skip-cygwin-install no-install no-execute)
+	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
+	# there no short opts are specified (e.g., with -o).
 	eval set -- $(getopt -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
 	while (($#)); do
 		v=$1
@@ -107,10 +113,15 @@ process_opt() {
 			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
 			--openssl-conf) Opts[openssl-conf]=$1; shift;;
 			# TODO: Perhaps just use the --skip-step mechanism internally.
-			--skip-cygwin-install) Opts[skip-cygwin-install]=yes;;
+			--skip-cygwin-install)
+				Opts[skip-cygwin-install]=yes
+				# This option is really just syntactic sugar.
+				Skip_steps[install_cyg_pkg]=yes;;
 			--no-install)
 				Opts[no-install]=yes
-				Make_install="echo skipping install...";;
+				Make_install="echo Skipping install...";;
+			--no-execute)
+				Opts[no-execute]=yes;;
 		esac
 	done
 }
@@ -128,25 +139,29 @@ detect_cac_card() {
 		sed -n '$s/[[:space:]]*ID[[:space:]]*:[[:space:]]*\([0-9]\+\)[[:space:]]*/\1/p')
 
 	# TODO: Allow user to insert and retry.
-	if [[ -z "$Card_id" ]]; then
+	if [[ -z $Card_id ]]; then
 		# TODO: Clean up message.
 		error "Error: Cannot detect CAC card. Have you inserted it?"
+	fi
+}
+check_prerequisites() {
+	if [[ -z $Opts[skip-cygwin-install] ]] && ! which install-info; then
+		error "Prerequisite error: This script cannot install cygwin packages without a working \`install-info' program." \
+			"Install this package (e.g., using Cygwin setup) and re-run."
 	fi
 }
 # Pre-requisite: Running cygwin setup program standalone fails if the install-info utility is not in the path. Appears
 # to be a cygwin bug/oversight: at any rate, we can get it by having user install just the info pkg up-front.
 # Note: Using setup -P for an already-installed package appears to re-install harmlessly.
 # TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
+# Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
+# gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
 install_cyg_pkg() {
-	# Note: If unattended setup causes problems on user's machine, he can install the packages himself through the gui
-	# and re-run with skip option.
-	if [[ "${Opts[skip-cygwin-install]}" == yes ]]; then
-		return
-	fi
-	# TODO: Document purpose...
+	# TODO: Document purpose of all these...
 	local -a pkgs=(
-		git curl wget libnss3 openssl openssl-devel chkconfig pkg-config automake libtool cygwin-devel dos2unix autoconf
-		libopenssl100 libcurl4 patch
+		git curl wget libnss3 openssl openssl-devel
+		chkconfig pkg-config automake libtool cygwin-devel
+		dos2unix autoconf libopenssl100 libcurl4 patch
 	)
 	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	set +e
@@ -164,7 +179,8 @@ download_source() {
 	)
 	for repo in "${repos[@]}"; do
 		# Note: Setting core.autocrlf=input obviates need for dos2unix post-processing.
-		git clone --config core.autocrlf=input $repo
+		# TODO: How to ensure we always use unmodified versions of things like git. Make this configurable somehow?
+		$Sys_git clone --config core.autocrlf=input $repo
 	done
 }
 build_opensc() {
@@ -184,14 +200,14 @@ create_certs() {
 	url=http://dodpki.c3pki.chamb.disa.mil
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
-	done >"${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem"
+	done >"${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem"
 	# TODO: Perhaps make the above just a full path.
 }
 build_curl() {
-	pushd curl
 	patch -u -p0 < curl.patch
+	pushd curl
 	# Note: curl from github doesn't come with a configure script.
-	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem" && make && $Make_install
+	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem" && make && $Make_install
 	popd
 }
 configure_openssl_conf() {
@@ -220,18 +236,18 @@ build_git() {
 install_env_script() {
 	# TODO: Any reason to make this configurable?
 	# TODO: Consider putting the cac id detection there also (in case slot id moves)...
-	cat <<-eof >/etc/profile.d/cac-enabled-git.sh
-	#! /bin/bash
-	if [[ $(uname -o) == Cygwin ]]; then
-		# Add environment vars needed for CAC-enabled Git
-		export GIT_SSL_CERT=slot_01-id_$Card_id
-		export GIT_SSL_KEY=slot_01-id_$Card_id
-		export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Cfg[ca-bundle-name]}.pem
-		export GIT_SSL_ENGINE=pkcs11
-		export GIT_SSL_KEYTYPE=ENG
-		export GIT_SSL_CERTTYPE=ENG
-	fi
-	eof
+	cat <<eof >/etc/profile.d/cac-enabled-git.sh
+#! /bin/bash
+if [[ \$(uname -o) == Cygwin ]]; then
+	# Add environment vars needed for CAC-enabled Git
+	export GIT_SSL_CERT=slot_01-id_$Card_id
+	export GIT_SSL_KEY=slot_01-id_$Card_id
+	export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem
+	export GIT_SSL_ENGINE=pkcs11
+	export GIT_SSL_KEYTYPE=ENG
+	export GIT_SSL_CERTTYPE=ENG
+fi
+eof
 }
 
 # Fail on error with indication of last step completed.
@@ -240,7 +256,13 @@ set -e
 
 trap on_exit EXIT
 process_opt "$@"
-#set_start_step
+# Always detect CAC card, since the results of id detection may be needed in other steps.
+detect_cac_card
+check_prerequisites
 run
+
+for k in ${!Opts[@]}; do
+	echo "$k: ${Opts[$k]}"
+done
 
 # vim:ts=4:sw=4:tw=120
