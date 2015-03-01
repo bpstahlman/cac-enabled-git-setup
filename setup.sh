@@ -145,10 +145,16 @@ detect_cac_card() {
 	fi
 }
 check_prerequisites() {
-	if [[ -z $Opts[skip-cygwin-install] ]] && ! which install-info; then
-		error "Prerequisite error: This script cannot install cygwin packages without a working \`install-info' program." \
-			"Install this package (e.g., using Cygwin setup) and re-run."
-	fi
+	# We really need only wget and install-info to boostrap things: wget for obvious reasons, and install-info because
+	# Cygwin's setup program won't work without it.
+	# Caveat: Name of exe and associated package may differ.
+	local -A exes=([wget]=wget [install-info]=info)
+	for exe in ${!exes[@]}; do
+		if [[ -z $Opts[skip-cygwin-install] ]] && ! which $exe; then
+			error "Prerequisite not met: This script cannot proceed without a working \`$exe' program." \
+				"Suggested remedy: Install package \`${exes[$exe]}' using Cygwin installer and rerun this script."
+		fi
+	done
 }
 # Pre-requisite: Running cygwin setup program standalone fails if the install-info utility is not in the path. Appears
 # to be a cygwin bug/oversight: at any rate, we can get it by having user install just the info pkg up-front.
@@ -163,9 +169,12 @@ install_cyg_pkg() {
 		chkconfig pkg-config automake libtool cygwin-devel
 		dos2unix autoconf libopenssl100 libcurl4 patch
 	)
+	# Obtain latest copy of setup program.
+	cyg_setup_url=https://cygwin.com/setup-x86.exe
+	wget $cyg_setup_url
 	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	set +e
-	./cyg_setup-x86.exe --no-admin --wait -q -P "${pkgs[@]}"
+	./${cyg_setup_url##*/} --no-admin --wait -q -P "${pkgs[@]}"
 	set -e
 }
 download_source() {
