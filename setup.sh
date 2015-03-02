@@ -145,10 +145,10 @@ detect_cac_card() {
 	fi
 }
 check_prerequisites() {
-	# We really need only wget and install-info to boostrap things: wget for obvious reasons, and install-info because
-	# Cygwin's setup program won't work without it.
+	# We really need only wget to boostrap things.
 	# Caveat: Name of exe and associated package may differ.
-	local -A exes=([wget]=wget [install-info]=info)
+	# TODO: No need for loop mechanism if this ends up being the only one...
+	local -A exes=([wget]=wget)
 	for exe in ${!exes[@]}; do
 		if [[ -z $Opts[skip-cygwin-install] ]] && ! which $exe; then
 			error "Prerequisite not met: This script cannot proceed without a working \`$exe' program." \
@@ -162,20 +162,34 @@ check_prerequisites() {
 # TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
 # Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
 # gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
+# Input: If -u option is provided, uninstall is performed.
 install_cyg_pkg() {
 	# TODO: Document purpose of all these...
 	local -a pkgs=(
-		git curl wget libnss3 openssl openssl-devel
+		info git curl wget libnss3 openssl openssl-devel
 		chkconfig pkg-config automake libtool cygwin-devel
 		dos2unix autoconf libopenssl100 libcurl4 patch
 	)
 	# Obtain latest copy of setup program.
-	cyg_setup_url=https://cygwin.com/setup-x86.exe
-	wget $cyg_setup_url
+	url=https://cygwin.com/setup-x86.exe
+	opt="-q -N -d -W -B"
+	setup=./${url##*/}
+	wget $url
 	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	set +e
-	./${cyg_setup_url##*/} --no-admin --wait -q -P "${pkgs[@]}"
+	if [[ $1 == -u ]]; then
+		# Uninstall.
+		$setup $opt -x "${pkgs[*]}"
+	else
+		# Caveat: I've run into issues attempting to install packages when install-info (in info package) didn't already
+		# exist.
+		$setup $opt -C base
+		#($setup $opt -P info)
+		echo "!!Installing packages: ${pkgs[*]}"
+		$setup $opt -P "${pkgs[*]}"
+	fi
 	set -e
+
 }
 download_source() {
 	# TODO: Perhaps separate OpenSC from the others, possibly even having a single build_opensc...
@@ -187,6 +201,7 @@ download_source() {
 		https://github.com/OpenSC/OpenSC
 	)
 	for repo in "${repos[@]}"; do
+		rm -rf "$(basename $repo .git)"
 		# Note: Setting core.autocrlf=input obviates need for dos2unix post-processing.
 		# TODO: How to ensure we always use unmodified versions of things like git. Make this configurable somehow?
 		$Sys_git clone --config core.autocrlf=input $repo
