@@ -10,6 +10,7 @@ Card_id=
 Make_install="make install"
 
 declare -i Step_idx=0
+# Container for any steps specified with --skip-step
 declare -A Skip_steps=()
 # These are tied to the --start-step / --end-step options
 Start_step=
@@ -27,8 +28,10 @@ declare -a Steps=(
 	download_source
 	build_opensc
 	create_certs
+	patch_curl
 	build_curl
 	configure_openssl_conf
+	patch_git
 	build_git
 	install_env_script
 )
@@ -162,24 +165,25 @@ check_prerequisites() {
 # TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
 # Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
 # gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
-# Input: If -u option is provided, uninstall is performed.
 install_cyg_pkg() {
 	# TODO: Document purpose of all these...
 	# Caveat: Make sure info pkg is installed first.
 	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
+	# Note: libexpat-devel and gettext-devel appear to be hidden dependencies of various configure/make scripts.
 	local -a pkgs=(
-		info git curl wget libnss3 openssl openssl-devel
-		chkconfig pkg-config automake libtool cygwin-devel
-		dos2unix autoconf libopenssl100 libcurl4 patch
+		info git wget dos2unix patch
+		libnss3 openssl openssl-devel libopenssl100
+		chkconfig pkg-config automake autoconf libtool cygwin-devel
+		libexpat-devel gettext-devel
 	)
 	# Obtain latest copy of setup program.
 	url=https://cygwin.com/setup-x86.exe
 	opt="-q -N -d -W -B"
 	setup=./${url##*/}
 	wget $url
-	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	# Install packages one at a time (though -P supports multiple).
-	# Rationale: Cygwin setup "quiet" mode doesn't handle dependendcies well.
+	# Rationale: Cygwin setup "quiet" mode doesn't handle dependencies well at all.
+	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	set +e
 	$setup $opt -C base
 	for p in "${pkgs[@]}"; do
@@ -223,8 +227,47 @@ create_certs() {
 	done >"${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem"
 	# TODO: Perhaps make the above just a full path.
 }
+# TODO: Decide whether these patches should be part of a package or here-docs.
+patch_curl() {
+	patch -u -p0 <<-'eof'
+	--- curl/lib/easy.c.orig	2015-02-25 10:25:12.505452200 -0600
+	+++ curl/lib/easy.c	2015-02-25 10:26:35.904222300 -0600
+	@@ -947,6 +947,18 @@
+								  data->state.resolver))
+		 goto fail;
+	 
+	+  /* If set, clone the handle to the engine being used. */
+	+#if defined(USE_SSLEAY) && defined(HAVE_OPENSSL_ENGINE_H)
+	+  if (data->state.engine) {
+	+    /* state.engine existing means curl_ossl_set_engine was
+	+    * previously successful. Because curl_ossl_set_engine worked,
+	+    * we can query the already-set engine for that handle and use
+	+    * that to increment a reference:
+	+    */
+	+    Curl_ssl_set_engine(outcurl, ENGINE_get_id(data->state.engine));
+	+  }
+	+#endif /* USE_SSLEAY */
+	+
+	   Curl_convert_setup(outcurl);
+	 
+	   outcurl->magic = CURLEASY_MAGIC_NUMBER;
+	--- curl/lib/vtls/openssl.c.orig	2015-02-25 10:22:35.120450300 -0600
+	+++ curl/lib/vtls/openssl.c	2015-02-25 10:23:47.825608800 -0600
+	@@ -761,6 +761,11 @@
+	   /* Lets get nice error messages */
+	   SSL_load_error_strings();
+	 
+	+  /* Load config file */
+	+  OPENSSL_load_builtin_modules();
+	+  if (CONF_modules_load_file(getenv("OPENSSL_CONF"), NULL, 0) <= 0)
+	+    return 0;
+	+
+	   /* Init the global ciphers and digests */
+	   if(!SSLeay_add_ssl_algorithms())
+		 return 0;
+	eof
+}
 build_curl() {
-	patch -u -p0 < curl.patch
 	pushd curl
 	# Note: curl from github doesn't come with a configure script.
 	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem" && make && $Make_install
@@ -248,41 +291,106 @@ configure_openssl_conf() {
 	[req_distinguished_name]
 	eof
 }
-build_git() {
-	patch -u -p0 < git.patch
-	# Note: Git has no configure script.
-	NO_R_TO_GCC_LINKER=1 CURLDIR=/usr/local make -C git prefix=/usr/local all ${Opts[no-install]:-install}
-}
-install_env_script() {
-	# TODO: Any reason to make this configurable?
-	# TODO: Consider putting the cac id detection there also (in case slot id moves)...
-	cat <<eof >/etc/profile.d/cac-enabled-git.sh
-#! /bin/bash
-if [[ \$(uname -o) == Cygwin ]]; then
-	# Add environment vars needed for CAC-enabled Git
-	export GIT_SSL_CERT=slot_01-id_$Card_id
-	export GIT_SSL_KEY=slot_01-id_$Card_id
-	export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem
-	export GIT_SSL_ENGINE=pkcs11
-	export GIT_SSL_KEYTYPE=ENG
-	export GIT_SSL_CERTTYPE=ENG
-fi
+patch_git() {
+	patch -u -p0 <<-'eof'
+	--- git/http.c.orig	2015-02-26 08:09:14.879850700 -0600
+	+++ git/http.c	2015-02-26 16:47:18.067707400 -0600
+	@@ -51,6 +51,9 @@
+	 struct credential http_auth = CREDENTIAL_INIT;
+	 static int http_proactive_auth;
+	 static const char *user_agent;
+	+static const char *ssl_keytype;
+	+static const char *ssl_certtype;
+	+static const char *ssl_engine;
+	 
+	 #if LIBCURL_VERSION_NUM >= 0x071700
+	 /* Use CURLOPT_KEYPASSWD as is */
+	@@ -252,6 +255,12 @@
+	 
+		if (!strcmp("http.useragent", var))
+			return git_config_string(&user_agent, var, value);
+	+	if (!strcmp("http.sslkeytype", var))
+	+		return git_config_string(&ssl_keytype, var, value);
+	+	if (!strcmp("http.sslcerttype", var))
+	+		return git_config_string(&ssl_certtype, var, value);
+	+	if (!strcmp("http.sslengine", var))
+	+		return git_config_string(&ssl_engine, var, value);
+	 
+		/* Fall back on the default ones */
+		return git_default_config(var, value, cb);
+	@@ -408,6 +417,17 @@
+			curl_easy_setopt(result, CURLOPT_PROXYAUTH, CURLAUTH_ANY);
+		}
+	 
+	+	/* Adding setting of engine-related curl SSL options. */
+	+	if (ssl_engine != NULL) {
+	+		curl_easy_setopt(result, CURLOPT_SSLENGINE, ssl_engine);
+	+		curl_easy_setopt(result, CURLOPT_SSLENGINE_DEFAULT, 1L);
+	+	}
+	+
+	+	if (ssl_keytype != NULL)
+	+		curl_easy_setopt(result, CURLOPT_SSLKEYTYPE, ssl_keytype);
+	+	if (ssl_certtype != NULL)
+	+		curl_easy_setopt(result, CURLOPT_SSLCERTTYPE, ssl_certtype);
+	+
+		set_curl_keepalive(result);
+	 
+		return result;
+	@@ -502,7 +522,10 @@
+				starts_with(url, "https://"))
+				ssl_cert_password_required = 1;
+		}
+	-
+	+	/* Added environment variables for expanded engine-related options. */
+	+	set_from_env(&ssl_keytype, "GIT_SSL_KEYTYPE");
+	+	set_from_env(&ssl_certtype, "GIT_SSL_CERTTYPE");
+	+	set_from_env(&ssl_engine, "GIT_SSL_ENGINE");
+	 #ifndef NO_CURL_EASY_DUPHANDLE
+		curl_default = get_curl_handle();
+	 #endif
+	--- git/prompt.c.orig	2015-02-26 16:39:49.891073200 -0600
+	+++ git/prompt.c	2015-02-26 16:39:55.933418800 -0600
+	@@ -45,7 +45,7 @@
+	 {
+		char *r = NULL;
+	 
+	-	if (flags & PROMPT_ASKPASS) {
+	+	if (!git_env_bool("GIT_INHIBIT_ASKPASS", 0) && flags & PROMPT_ASKPASS) {
+			const char *askpass;
+	 
+			askpass = getenv("GIT_ASKPASS");
+	eof
+	}
+	build_git() {
+		# Note: Git has no configure script.
+		NO_R_TO_GCC_LINKER=1 CURLDIR=/usr/local make -C git prefix=/usr/local all ${Opts[no-install]:-install}
+	}
+	install_env_script() {
+		# TODO: Any reason to make this configurable?
+		# TODO: Consider putting the cac id detection there also (in case slot id moves)...
+		cat <<eof >/etc/profile.d/cac-enabled-git.sh
+	#! /bin/bash
+	if [[ \$(uname -o) == Cygwin ]]; then
+		# Add environment vars needed for CAC-enabled Git
+		export GIT_SSL_CERT=slot_01-id_$Card_id
+		export GIT_SSL_KEY=slot_01-id_$Card_id
+		export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem
+		export GIT_SSL_ENGINE=pkcs11
+		export GIT_SSL_KEYTYPE=ENG
+		export GIT_SSL_CERTTYPE=ENG
+	fi
 eof
 }
 
-# Fail on error with indication of last step completed.
-# Caveat: Take care not to generate spurious errors (e.g., bare `let step++' when step==0).
+# Default mode is to fail on error with indication of last step completed.
+# Note: Step functions with a need (e.g., install_cyg_pkg) may *temporarily* unset.
+# Caveat: Take care not to generate spurious errors: e.g., do ((++var)) instead of ((var++) when var could be 0.
 set -e
-
 trap on_exit EXIT
 process_opt "$@"
 # Always detect CAC card, since the results of id detection may be needed in other steps.
 detect_cac_card
 check_prerequisites
 run
-
-for k in ${!Opts[@]}; do
-	echo "$k: ${Opts[$k]}"
-done
 
 # vim:ts=4:sw=4:tw=120
