@@ -165,6 +165,8 @@ check_prerequisites() {
 # Input: If -u option is provided, uninstall is performed.
 install_cyg_pkg() {
 	# TODO: Document purpose of all these...
+	# Caveat: Make sure info pkg is installed first.
+	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
 	local -a pkgs=(
 		info git curl wget libnss3 openssl openssl-devel
 		chkconfig pkg-config automake libtool cygwin-devel
@@ -176,20 +178,14 @@ install_cyg_pkg() {
 	setup=./${url##*/}
 	wget $url
 	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
+	# Install packages one at a time (though -P supports multiple).
+	# Rationale: Cygwin setup "quiet" mode doesn't handle dependendcies well.
 	set +e
-	if [[ $1 == -u ]]; then
-		# Uninstall.
-		$setup $opt -x "${pkgs[*]}"
-	else
-		# Caveat: I've run into issues attempting to install packages when install-info (in info package) didn't already
-		# exist.
-		$setup $opt -C base
-		#($setup $opt -P info)
-		echo "!!Installing packages: ${pkgs[*]}"
-		$setup $opt -P "${pkgs[*]}"
-	fi
+	$setup $opt -C base
+	for p in "${pkgs[@]}"; do
+		$setup $opt -P "$p"
+	done
 	set -e
-
 }
 download_source() {
 	# TODO: Perhaps separate OpenSC from the others, possibly even having a single build_opensc...
