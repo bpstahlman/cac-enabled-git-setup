@@ -36,12 +36,14 @@ declare -a Steps=(
 	install_env_script
 )
 
+# TODO: Consider making this an on_err (using ERR signal instead of EXIT).
 on_exit() {
 	if (($? == 0)); then
 		echo "Success!"
+		echo "Important Note: You may need to open a new terminal to have changes take effect."
 	else
-		echo "Setup aborted with error! Check stdout for details."
-		echo "After resolving any issues, resume setup by running ./setup -s ${Steps[$Step_idx]}"
+		echo 2>&1 "Setup aborted with error! Check stdout for details."
+		echo 2>&1 "After resolving any issues, resume setup by running ./setup -s ${Steps[$Step_idx]}"
 	fi
 	cd "$Basedir"
 }
@@ -72,9 +74,45 @@ run() {
 log() {
 	echo >&2 "$@" 
 }
+# Display usage message on stderr
 usage() {
-	# TODO: Sensible usage. Also --help.
-	echo >&2 "Usage: ./setup.sh blah blah"
+	# TODO: Path or not?
+	prog=$(basename $0)
+	cat >&2 <<-eof
+		Usage: $prog [OPTION]...
+		Try '$prog --help' for more information.
+	eof
+}
+# Display help on stdout
+show_help() {
+	prog=$(basename $0)
+	# TODO: Finish converting this...
+	cat <<-eof
+	Usage: $prog [OPTION]...
+	Build a DOD-aware, CAC-enabled Git.
+
+	  -s, --start-step=STEP      start with STEP         
+	      --skip-step=STEP       skip specified STEP
+	      --end-step=STEP        end with STEP
+	      --ca-bundle-dir=DIR    where to put generated ca-bundle
+	                             Default: /usr/ssl/certs
+	      --ca-bundle-name=NAME  basename for generated ca-bundle
+	                             Default: ca-bundle-plus-dod-root
+	      --openssl-conf=PATH    full path for generated openssl conf file
+	                             CAVEAT: Directory must exist.
+	                             Default: /usr/ssl/pkcs11-openssl.cnf
+	      --skip-cygwin-install  only if you've already installed the cygwin
+	                             package prerequisites yourself
+	      --no-install           builds without installing
+	      --no-execute           a sort of "dry run" - steps not executed
+	      --help                 display this help and exit
+	      --version              output version information and exit
+
+	Examples:
+	  $prog --ca-bundle-dir=~/my-certs --openssl-conf=~/my-conf/openssl.conf
+	  $prog --skip-cygwin-install
+
+	eof
 }
 error() {
 	usage=no
@@ -84,7 +122,8 @@ error() {
 	fi
 	echo 2>&1 "$@"
 	if [[ $usage == yes ]]; then
-		usage
+		# Pass error along to usage for display.
+		usage "$@"
 	fi
 	# TODO: Consider adding an error code option.
 	exit 1
@@ -100,20 +139,37 @@ expand_path() {
 	fi
 }
 
+# Assumption: errexit option has not yet been enabled.
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
 	# TODO: Perhaps put these in array, at least...
 	longs=(
+		"help"
 		start-step: end-step: skip-step:
 		ca-bundle-dir: ca-bundle-name: openssl-conf:
 		skip-cygwin-install no-install no-execute)
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
 	# there no short opts are specified (e.g., with -o).
-	eval set -- $(getopt -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
+	# Getopt workaround: To facilitate proper error reporting, I'm calling getopt up to twice: once to validate, and
+	# then, only if valid, to get the actual parsed options. Note that if validation fails, the stderr redirection
+	# ensures that I have the error text for reporting via error(); in the second call, the -q option ensures there can
+	# be no error text, so the redirection is harmless.
+	for mode in check real; do
+		if [[ $mode == check ]]; then quiet=-Q; else quiet=-q ; fi
+		opts=$(getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
+		if (( $? )); then
+			error --usage "$opts"
+		fi
+	done
+	eval set -- "$opts"
 	while (($#)); do
 		v=$1
 		shift
 		case $v in
+			--help)
+				echo showing help
+				show_help
+				exit 0;;
 			-s | --start-step) Start_step=$1; shift;;
 			--end-step) End_step=$1; shift;;
 			--skip-step)
@@ -412,21 +468,22 @@ fi
 eof
 }
 
-# Default mode is to fail on error with indication of last step completed.
-# Note: Step functions with a need (e.g., install_cyg_pkg) may *temporarily* unset.
-# Caveat: Take care not to generate spurious errors: e.g., do ((++var)) instead of ((var++) when var could be 0.
-set -e
-trap on_exit EXIT
 process_opt "$@"
 clean_env
 # Always detect CAC card, since the results of id detection may be needed in other steps.
 detect_cac_card
 check_prerequisites
+
+# Default mode from here on is to fail on error with indication of last step completed.
+# Note: Step functions with a need (e.g., install_cyg_pkg) may *temporarily* unset.
+# Caveat: Take care not to generate spurious errors: e.g., do ((++var)) instead of ((var++) when var could be 0.
+set -e
+trap on_exit EXIT
 run
 
 # Short-term TODO
 # 1. Add timestamps
-# 2. dot source the env file as part of install_env_script.
-# 3. Usage and help
+# 2. No reason not to put the cac-detection in the env script: it's not really needed for setup, and I believe I've seen
+#    it change.
 
 # vim:ts=4:sw=4:tw=120
