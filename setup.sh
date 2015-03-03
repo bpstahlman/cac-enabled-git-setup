@@ -73,6 +73,7 @@ log() {
 	echo >&2 "$@" 
 }
 usage() {
+	# TODO: Sensible usage. Also --help.
 	echo >&2 "Usage: ./setup.sh blah blah"
 }
 error() {
@@ -87,6 +88,16 @@ error() {
 	fi
 	# TODO: Consider adding an error code option.
 	exit 1
+}
+# Processes a ~ (alone) or a ~/ at head of input path, replacing with `$HOME/'.
+# Rationale: Bash's tilde expansion is inhibited by quoting a path, but quotes may be necessary to protect spaces.
+# TODO: Perhaps remove this if I end up not using (on grounds that user shouldn't quote if he wants it expanded).
+expand_path() {
+	if [[ $1 == "~" ]]; then
+		echo "$HOME"
+	else
+		echo ${1/#~\//$HOME/}
+	fi
 }
 
 process_opt() {
@@ -197,6 +208,9 @@ clean_env() {
 	for v in $(env | grep '^[[:space:]]*GIT_SSL_'); do
 		unset ${v%%=*};
 	done
+	# These 2 shouldn't have any impact, but just in case...
+	unset OPENSSL_CONF
+	unset GIT_INHIBIT_ASKPASS
 }
 download_source() {
 	# TODO: Perhaps separate OpenSC from the others, possibly even having a single build_opensc...
@@ -383,7 +397,7 @@ if [[ \$(uname -o) == Cygwin ]]; then
 	# Add environment vars needed for CAC-enabled Git
 	export GIT_SSL_CERT=slot_01-id_$Card_id
 	export GIT_SSL_KEY=slot_01-id_$Card_id
-	export GIT_SSL_CAINFO=${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem
+	export GIT_SSL_CAINFO="${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem"
 	export GIT_SSL_ENGINE=pkcs11
 	export GIT_SSL_KEYTYPE=ENG
 	export GIT_SSL_CERTTYPE=ENG
