@@ -424,4 +424,9 @@ detect_cac_card
 check_prerequisites
 run
 
+# Short-term TODO
+# 1. Add timestamps
+# 2. dot source the env file as part of install_env_script.
+# 3. Usage and help
+
 # vim:ts=4:sw=4:tw=120
