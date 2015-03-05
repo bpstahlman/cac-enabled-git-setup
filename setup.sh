@@ -112,6 +112,27 @@ show_help() {
 	  $prog --ca-bundle-dir=~/my-certs --openssl-conf=~/my-conf/openssl.conf
 	  $prog --skip-cygwin-install
 
+	Output:
+	  Upon successful termination of this script, you should have a CAC-aware Git
+	  in your path (/usr/local/bin), and a startup script in /etc/profile.d, which
+	  automatically makes the environment changes needed to use the CAC-aware Git
+	  each time you start a Cygwin shell.
+
+	  Note: If you wish to inhibit loading the PKCS11 engine temporarily, you have
+	  several options:
+	    1. Set environment variable INHIBIT_CAC_ENABLED_GIT=1 to prevent the env
+	       vars from being defined each time you start a Cygwin shell.
+	    2. Run disable_cac_aware_git from within your current Cygwin bash shell.
+	       Note: There's a matching enable_cac_aware_git should you wish to
+	       re-enable.
+
+	  Note: This script installs the default (non-CAC-aware) Cygwin Git in
+	  /usr/bin; thus, a more definitive way to disable the CAC customizations is
+	  simply to use the default git in /usr/bin instead of the customized git in
+	  /usr/local/bin. To facilitate this, the startup script also creates...
+	    ncgit
+	  ...as an alias to the default Git.
+
 	eof
 }
 error() {
@@ -167,7 +188,6 @@ process_opt() {
 		shift
 		case $v in
 			--help)
-				echo showing help
 				show_help
 				exit 0;;
 			-s | --start-step) Start_step=$1; shift;;
@@ -225,12 +245,12 @@ check_prerequisites() {
 		fi
 	done
 }
-# Pre-requisite: Running cygwin setup program standalone fails if the install-info utility is not in the path. Appears
-# to be a cygwin bug/oversight: at any rate, we can get it by having user install just the info pkg up-front.
+# Caveat: Running cygwin setup program standalone fails if the install-info
+# utility is not in the path. Appears to be a cygwin bug/oversight.
 # Note: Using setup -P for an already-installed package appears to re-install harmlessly.
 # TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
 # Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
-# gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
+# setup gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
 install_cyg_pkg() {
 	# TODO: Document purpose of all these...
 	# Caveat: Make sure info pkg is installed first.
@@ -297,11 +317,21 @@ build_opensc() {
 	done
 }
 create_certs() {
+	# Make sure the directory exists.
+	dir="${Opts[ca-bundle-dir]}"
+	if [[ ! -d $dir ]]; then
+	   mkdir -p "$dir"
+	fi
+	cert_path="$dir/${Opts[ca-bundle-name]}.pem"
+	# Seed the file with the CA bundles that ship with openssl
+	cat /usr/ssl/certs/ca-bundle{,.trust}.crt >"$cert_path"
+
+	# Append the DOD root certs (after converting from .p7b to .pem format)
 	certs=(rel3_dodroot_2048 dodeca dodeca2)
 	url=http://dodpki.c3pki.chamb.disa.mil
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
-	done >"${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem"
+	done >>"$cert_path"
 	# TODO: Perhaps make the above just a full path.
 }
 # TODO: Decide whether these patches should be part of a package or here-docs.
@@ -449,7 +479,7 @@ install_env_script() {
 	# TODO: Consider putting the cac id detection there also (in case slot id moves)...
 	cat <<eof >/etc/profile.d/cac-enabled-git.sh
 #! /bin/bash
-if [[ \$(uname -o) == Cygwin ]]; then
+enable_cac_aware_git() {
 	# Add environment vars needed for CAC-enabled Git
 	export GIT_SSL_CERT=slot_01-id_$Card_id
 	export GIT_SSL_KEY=slot_01-id_$Card_id
@@ -464,7 +494,23 @@ if [[ \$(uname -o) == Cygwin ]]; then
 	# Keep Git from using the Tk-based askpass gui (which has an X11 dependency that may not be satisfied) before
 	# defaulting to the console-based prompt.
 	export GIT_INHIBIT_ASKPASS=yes
+}
+disable_cac_aware_git() {
+	for v in \$(env|grep GIT_SSL_); do
+		unset \${v%%=*};
+	done
+	unset OPENSSL_CONF
+	unset GIT_INHIBIT_ASKPASS
+}
+# Note: User can disable automatic CAC setup at shell startup simply by defining a non-empty INHIBIT_CAC_ENABLED_GIT env
+# var. To disable/re-enable in a running shell, he can use the following functions:
+#     enable_cac_aware_git
+#     disable_cac_aware_git
+if [[ \$(uname -o) == Cygwin && -z \$INHIBIT_CAC_ENABLED_GIT ]]; then
+	enable_cac_aware_git
 fi
+# As a convenience, provide an alias to "non-CAC-aware" git.
+alias ncgit=/usr/bin/git
 eof
 }
 
