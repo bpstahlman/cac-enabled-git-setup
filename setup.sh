@@ -10,11 +10,18 @@ Card_id=
 Make_install="make install"
 
 declare -i Step_idx=0
-# Container for any steps specified with --skip-step
+# Container for steps specified with --skip-step
 declare -A Skip_steps=()
+# Container for steps specified with --only-steps
+declare -A Only_steps=()
 # These are tied to the --start-step / --end-step options
 Start_step=
 End_step=
+# Rules:
+# --start-step and/or --end-step puts us in range mode
+# --only-step puts us in only mode
+# max 1 mode transition permitted
+Step_mode=normal # normal | range | only
 
 # TODO: Consider adding defaults for all... For now, missing options assumed to be unset.
 declare -A Opts=(
@@ -39,45 +46,70 @@ declare -a Steps=(
 # TODO: Consider making this an on_err (using ERR signal instead of EXIT).
 on_exit() {
 	if (($? == 0)); then
-		echo "Success!"
-		echo "Important Note: You may need to open a new terminal to have changes take effect."
+		log --ts "Success! You may need to open a new terminal before changes take effect."
 	else
-		echo 2>&1 "Setup aborted with error! Check stdout for details."
-		echo 2>&1 "After resolving any issues, resume setup by running ./setup -s ${Steps[$Step_idx]}"
+		cat <<-eof >&2
+		Setup aborted with error! Check stdout for details.
+		After resolving any issues, you can resume setup at the failed step with the
+		following option: --start-step ${Steps[$Step_idx]}"
+		eof
 	fi
 	cd "$Basedir"
 }
 
-# Run all steps, starting with the first (or the one specified by --start-step), and ending with the last (or the one
-# specified with --end-step), skipping any specified by options such as --skip-step.
+# Run all steps not excluded by options.
 run() {
-	if [[ -n "$Start_step" ]]; then started=no; else started=yes; fi
+	local started=no
+	if [[ $Step_mode == normal || ($Step_mode == range && -z $Start_step) ]]; then
+		started=yes
+	fi
 	for step in "${Steps[@]}"; do
-		if [[ $started == no && $step == $Start_step ]]; then
-			started=yes
+		local skip=no
+		# Process started and skip logic.
+		if [[ $Step_mode == only ]]; then
+			if [[ -z ${Only_steps[$step]} ]]; then
+				skip=yes
+			fi
+		else # normal | range
+			if [[ $started == no && $step == $Start_step ]]; then
+				started=yes
+			fi
+			if [[ $started == no || -n ${Skip_steps[$step]} ]]; then
+				skip=yes
+			fi
 		fi
-		# If we've passed start step (or none given) and we're not skipping...
-		if [[ $started == yes && -z ${Skip_steps[$step]} ]]; then
-			log "Starting step #$((Step_idx + 1)): $step"
+		# If we're not skipping...
+		if [[ $skip == no ]]; then
+			log --ts "Starting step #$((Step_idx + 1)): $step"
 			${Opts[no-execute]:+echo Simulating step} $step
-			log "Finished step #$((Step_idx + 1)): $step"
+			log --ts "Finished step #$((Step_idx + 1)): $step"
 		fi
-		if [[ -n $End_step && $step == $End_step ]]; then
-			log "Exiting due to --end-step '$End_step'"
+		# Check for termination condition.
+		if [[ $Step_mode == range && -n $End_step && $step == $End_step ]]; then
+			log "Exiting after specified end step: $End_step"
 			return 0
 		fi
 		((++Step_idx))
 	done
 }
 
+hit_any_key_prompt() {
+	echo "Hit any key to continue..."
+	read -s -n 1
+}
+
 # TODO: Colorize?
 log() {
-	echo >&2 "$@" 
+	if [[ $1 == --ts ]]; then
+		ts="$(date +%T): "
+		shift
+	fi
+	echo >&2 "$ts$@" 
 }
 # Display usage message on stderr
 usage() {
 	# TODO: Path or not?
-	prog=$(basename $0)
+	local prog=$(basename $0)
 	cat >&2 <<-eof
 		Usage: $prog [OPTION]...
 		Try '$prog --help' for more information.
@@ -85,36 +117,38 @@ usage() {
 }
 # Display help on stdout
 show_help() {
-	prog=$(basename $0)
+	local prog=$(basename $0)
 	# TODO: Finish converting this...
 	cat <<-eof
 	Usage: $prog [OPTION]...
 	Build a DOD-aware, CAC-enabled Git.
 
-	  -s, --start-step=STEP      start with STEP         
-	      --skip-step=STEP       skip specified STEP
-	      --end-step=STEP        end with STEP
-	      --ca-bundle-dir=DIR    where to put generated ca-bundle
-	                             Default: /usr/ssl/certs
-	      --ca-bundle-name=NAME  basename for generated ca-bundle
-	                             Default: ca-bundle-plus-dod-root
-	      --openssl-conf=PATH    full path for generated openssl conf file
-	                             CAVEAT: Directory must exist.
-	                             Default: /usr/ssl/pkcs11-openssl.cnf
-	      --skip-cygwin-install  only if you've already installed the cygwin
-	                             package prerequisites yourself
-	      --no-install           builds without installing
-	      --no-execute           a sort of "dry run" - steps not executed
-	      --list-steps           list the steps (with short desc) and exit
-	      --help                 display this help and exit
-	      --version              output version information and exit
+	  -s, --start-step=STEP           start with STEP         
+	      --skip-steps=STEP[,STEP]... skip specified step(s)
+	      --only-steps=STEP[,STEP]... run *only* specified step(s)
+	      --end-step=STEP             end with STEP
+	      --ca-bundle-dir=DIR         where to put generated ca-bundle
+	                                  Default: /usr/ssl/certs
+	      --ca-bundle-name=NAME       basename for generated ca-bundle
+	                                  Default: ca-bundle-plus-dod-root
+	      --openssl-conf=PATH         full path for generated openssl conf file
+	                                  CAVEAT: Directory must exist.
+	                                  Default: /usr/ssl/pkcs11-openssl.cnf
+	      --skip-cygwin-install       only if you've already installed the cygwin
+	                                  package prerequisites yourself
+	      --no-install                builds without installing
+	      --no-execute                a sort of "dry run" - steps not executed
+	      --list-steps                list the steps (with short desc) and exit
+	      --help                      display this help and exit
+	      --version                   output version information and exit
 
 	Examples:
 	  $prog --ca-bundle-dir=~/my-certs --openssl-conf=~/my-conf/openssl.conf
 	  $prog --skip-cygwin-install
+	  $prog --start-step create_certs
 
 	Prerequisites: (Before running...)
-	  This script assumes you have the Cygwin "Base" package installed.
+	  This script assumes you have the default Cygwin "Base" package installed.
 	  It also assumes a working \`wget' in your path (may be obtained from the
 	  Cygwin "Web" package).
 
@@ -157,12 +191,12 @@ show_help() {
 	eof
 }
 error() {
-	usage=no
-	if [[ "$1" == "--usage" ]]; then
+	local usage=no
+	if [[ $1 == --usage ]]; then
 		usage=yes
 		shift
 	fi
-	echo 2>&1 "$@"
+	echo >&2 "$@"
 	if [[ $usage == yes ]]; then
 		# Pass error along to usage for display.
 		usage "$@"
@@ -171,10 +205,6 @@ error() {
 	exit 1
 }
 list_steps() {
-		info git wget dos2unix patch
-		libnss3 openssl openssl-devel libopenssl100
-		chkconfig pkg-config automake autoconf libtool cygwin-devel
-		libexpat-devel gettext-devel
 	cat <<-eof
 	install_cyg_pkg
 	    Install Cygwin packages for NSS and OpenSSL, as well as some packages that
@@ -226,14 +256,46 @@ expand_path() {
 		echo ${1/#~\//$HOME/}
 	fi
 }
-
+set_start_step() {
+	if [[ $Step_mode == only ]]; then
+		error --usage "Illegal attempt to use --start-step: mutually-exclusive options specified"
+	fi
+	Start_step=$1
+	Step_mode=range
+}
+set_end_step() {
+	if [[ $Step_mode == only ]]; then
+		error --usage "Illegal attempt to use --end-step: mutually-exclusive options specified"
+	fi
+	End_step=$1
+	Step_mode=range
+}
+add_skip_steps() {
+	if [[ $Step_mode == only ]]; then
+		error --usage "Illegal attempt to use --skip-steps: mutually-exclusive options specified"
+	fi
+	# Update hash of steps to skip.
+	for s in ${1//,/ }; do
+		Skip_steps[$s]=yes
+	done
+}
+add_only_steps() {
+	if [[ $Step_mode == range ]]; then
+		error --usage "Illegal attempt to use --only-steps: mutually-exclusive options specified"
+	fi
+	# Update hash of steps to run
+	for s in ${1//,/ }; do
+		Only_steps[$s]=yes
+	done
+	Step_mode=only
+}
 # Assumption: errexit option has not yet been enabled.
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
 	# TODO: Perhaps put these in array, at least...
-	longs=(
+	local -a longs=(
 		"help" list-steps
-		start-step: end-step: skip-step:
+		start-step: end-step: skip-steps: only-steps:
 		ca-bundle-dir: ca-bundle-name: openssl-conf:
 		skip-cygwin-install no-install no-execute)
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
@@ -244,14 +306,14 @@ process_opt() {
 	# be no error text, so the redirection is harmless.
 	for mode in check real; do
 		if [[ $mode == check ]]; then quiet=-Q; else quiet=-q ; fi
-		opts=$(getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
+		local opts=$(getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
 		if (( $? )); then
 			error --usage "$opts"
 		fi
 	done
 	eval set -- "$opts"
 	while (($#)); do
-		v=$1
+		local v=$1
 		shift
 		case $v in
 			--help)
@@ -260,13 +322,17 @@ process_opt() {
 			--list-steps)
 				list_steps
 				exit 0;;
-			-s | --start-step) Start_step=$1; shift;;
-			--end-step) End_step=$1; shift;;
-			--skip-step)
-				# Add to hash of steps to skip.
-				# Note: Seems to be some weirdness with getopt handling of multiples when no short opts specified.
-				# Workaround: Configure at least on short opt (with -o).
-				Skip_steps[$1]=yes
+			-s | --start-step)
+				set_start_step $1
+				shift;;
+			--end-step)
+				set_end_step $1
+				shift;;
+			--skip-steps)
+				add_skip_steps $1
+				shift;;
+			--only-steps)
+				add_only_steps $1
 				shift;;
 			--ca-bundle-dir) Opts[ca-bundle-dir]=$1; shift;;
 			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
@@ -293,7 +359,7 @@ detect_cac_card() {
 	# 		Authority      : no
 	# 		Path           : 
 	# 		ID             : 01
-	Card_id=$(pkcs15-tool -c |
+	local Card_id=$(pkcs15-tool -c |
 		sed -n -e '/PIV/,/ID/p' |
 		sed -n '$s/[[:space:]]*ID[[:space:]]*:[[:space:]]*\([0-9]\+\)[[:space:]]*/\1/p')
 
@@ -333,9 +399,9 @@ install_cyg_pkg() {
 		libexpat-devel gettext-devel
 	)
 	# Obtain latest copy of setup program and make executable.
-	url=https://cygwin.com/setup-x86.exe
-	opt="-q -N -d -W -B"
-	setup=./${url##*/}
+	local url=https://cygwin.com/setup-x86.exe
+	local opt="-q -N -d -W -B"
+	local setup=./${url##*/}
 	wget -O $setup $url
 	chmod a+x $setup
 	# Install packages one at a time (though -P supports multiple).
@@ -360,7 +426,7 @@ clean_env() {
 }
 download_source() {
 	# TODO: Perhaps separate OpenSC from the others, possibly even having a single build_opensc...
-	repos=(
+	local repos=(
 		https://github.com/bagder/curl.git
 		https://github.com/git/git.git
 		https://github.com/OpenSC/engine_pkcs11
@@ -377,7 +443,7 @@ download_source() {
 build_opensc() {
 	# Caveat: If we don't set PKG_CONFIG_PATH, the libp11 we're about to build won't be found in subsequent build steps.
 	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
-	libs=(libp11 engine_pkcs11 OpenSC)
+	local libs=(libp11 engine_pkcs11 OpenSC)
 	for d in "${libs[@]}"; do
 		pushd $d;
 		# TODO: Make sure error handled as desired (with effective popd).
@@ -388,17 +454,17 @@ build_opensc() {
 }
 create_certs() {
 	# Make sure the directory exists.
-	dir="${Opts[ca-bundle-dir]}"
+	local dir="${Opts[ca-bundle-dir]}"
 	if [[ ! -d $dir ]]; then
 	   mkdir -p "$dir"
 	fi
-	cert_path="$dir/${Opts[ca-bundle-name]}.pem"
+	local cert_path="$dir/${Opts[ca-bundle-name]}.pem"
 	# Seed the file with the CA bundles that ship with openssl
 	cat /usr/ssl/certs/ca-bundle{,.trust}.crt >"$cert_path"
 
 	# Append the DOD root certs (after converting from .p7b to .pem format)
-	certs=(rel3_dodroot_2048 dodeca dodeca2)
-	url=http://dodpki.c3pki.chamb.disa.mil
+	local certs=(rel3_dodroot_2048 dodeca dodeca2)
+	local url=http://dodpki.c3pki.chamb.disa.mil
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
 	done >>"$cert_path"
@@ -598,8 +664,6 @@ trap on_exit EXIT
 run
 
 # Short-term TODO
-# 1. Add timestamps
-# 2. Add --only-steps and convert allow both it and --skip-steps to take comma-separated.
-# 3. Add cygwin 64 option
+# 1. Add cygwin 64 option
 
 # vim:ts=4:sw=4:tw=120
