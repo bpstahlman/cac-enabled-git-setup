@@ -23,7 +23,7 @@ End_step=
 # max 1 mode transition permitted
 Step_mode=normal # normal | range | only
 
-# TODO: Consider adding defaults for all... For now, missing options assumed to be unset.
+# Note: A missing boolean option is considered unset.
 declare -A Opts=(
 	[ca-bundle-dir]=/usr/ssl/certs
 	[ca-bundle-name]=ca-bundle-plus-dod-root
@@ -93,11 +93,6 @@ run() {
 	done
 }
 
-hit_any_key_prompt() {
-	echo "Hit any key to continue..."
-	read -s -n 1
-}
-
 # TODO: Colorize?
 log() {
 	if [[ $1 == --ts ]]; then
@@ -136,6 +131,7 @@ show_help() {
 	                                  Default: /usr/ssl/pkcs11-openssl.cnf
 	      --skip-cygwin-install       only if you've already installed the cygwin
 	                                  package prerequisites yourself
+	      --use-cygwin64              install cygwin 64-bit packages - !UNTESTED!
 	      --no-install                builds without installing
 	      --no-execute                a sort of "dry run" - steps not executed
 	      --list-steps                list the steps (with short desc) and exit
@@ -289,6 +285,14 @@ add_only_steps() {
 	done
 	Step_mode=only
 }
+confirm_cygwin64() {
+	echo >&2 "Warning! This script has not been tested on 64-bit versions of Cygwin."
+	echo >&2 "Do you wish to proceed? (y/[n])"
+	read ans
+	if [[ $ans != [yY] ]]; then
+		return 1
+	fi
+}
 # Assumption: errexit option has not yet been enabled.
 process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
@@ -297,7 +301,7 @@ process_opt() {
 		"help" list-steps
 		start-step: end-step: skip-steps: only-steps:
 		ca-bundle-dir: ca-bundle-name: openssl-conf:
-		skip-cygwin-install no-install no-execute)
+		skip-cygwin-install use-cygwin64 no-install no-execute)
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
 	# there no short opts are specified (e.g., with -o).
 	# Getopt workaround: To facilitate proper error reporting, I'm calling getopt up to twice: once to validate, and
@@ -342,6 +346,11 @@ process_opt() {
 				Opts[skip-cygwin-install]=yes
 				# This option is really just syntactic sugar.
 				Skip_steps[install_cyg_pkg]=yes;;
+			--use-cygwin64)
+				if ! confirm_cygwin64; then
+					exit 0
+				fi
+				Opts[use-cygwin64]=yes;;
 			--no-install)
 				Opts[no-install]=yes
 				Make_install="echo Skipping install...";;
@@ -398,8 +407,8 @@ install_cyg_pkg() {
 		chkconfig pkg-config automake autoconf libtool cygwin-devel
 		libexpat-devel gettext-devel
 	)
-	# Obtain latest copy of setup program and make executable.
-	local url=https://cygwin.com/setup-x86.exe
+	# Obtain latest copy of appropriate setup program and make executable.
+	local url=https://cygwin.com/setup-x86${Opts[use-cygwin64]:+_64}.exe
 	local opt="-q -N -d -W -B"
 	local setup=./${url##*/}
 	wget -O $setup $url
