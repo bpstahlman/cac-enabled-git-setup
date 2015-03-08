@@ -402,8 +402,8 @@ install_cyg_pkg() {
 	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
 	# Note: libexpat-devel and gettext-devel appear to be hidden dependencies of various configure/make scripts.
 	local -a pkgs=(
-		make binutils gcc-g++ libiconv-devel
-		info git wget dos2unix patch
+		info make binutils gcc-g++ libiconv-devel
+		git wget dos2unix patch
 		libnss3 openssl openssl-devel libopenssl100
 		chkconfig pkg-config automake autoconf libtool cygwin-devel
 		libexpat-devel gettext-devel
@@ -490,7 +490,7 @@ patch_curl() {
 	     goto fail;
 	 
 	+  /* If set, clone the handle to the engine being used. */
-	+#if defined(USE_SSLEAY) && defined(HAVE_OPENSSL_ENGINE_H)
+	+#ifdef HAVE_OPENSSL_ENGINE_H
 	+  if (data->state.engine) {
 	+    /* state.engine existing means curl_ossl_set_engine was
 	+    * previously successful. Because curl_ossl_set_engine worked,
@@ -499,7 +499,7 @@ patch_curl() {
 	+    */
 	+    Curl_ssl_set_engine(outcurl, ENGINE_get_id(data->state.engine));
 	+  }
-	+#endif /* USE_SSLEAY */
+	+#endif /* HAVE_OPENSSL_ENGINE_H */
 	+
 	   Curl_convert_setup(outcurl);
 	 
