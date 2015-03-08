@@ -5,6 +5,7 @@ Basedir=$PWD
 # Make sure we have an unmodified git we can use to clone source repos.
 Sys_git=/usr/bin/git
 # This will be detected and set in detect_cac_card.
+# Possible TODO: This can also be set by option now. Perhaps put in Opts[]
 Card_id=
 # Facilitate skipping install step when --no-install specified
 Make_install="make install"
@@ -122,6 +123,9 @@ show_help() {
 	      --skip-steps=STEP[,STEP]... skip specified step(s)
 	      --only-steps=STEP[,STEP]... run *only* specified step(s)
 	      --end-step=STEP             end with STEP
+	      --card-id=XX                2-digit smart card id
+	                                  Note: Can be detected by script if CAC card
+	                                  is inserted.
 	      --ca-bundle-dir=DIR         where to put generated ca-bundle
 	                                  Default: /usr/ssl/certs
 	      --ca-bundle-name=NAME       basename for generated ca-bundle
@@ -285,6 +289,12 @@ add_only_steps() {
 	done
 	Step_mode=only
 }
+set_card_id() {
+	if [[ $1 != [0-9][0-9] ]]; then
+		error --usage "Invalid id format for card-id: $1"
+	fi
+	Card_id=$1
+}
 confirm_cygwin64() {
 	echo >&2 "Warning! This script has not been tested on 64-bit versions of Cygwin."
 	echo >&2 "Do you wish to proceed? (y/[n])"
@@ -300,7 +310,7 @@ process_opt() {
 	local -a longs=(
 		"help" list-steps
 		start-step: end-step: skip-steps: only-steps:
-		ca-bundle-dir: ca-bundle-name: openssl-conf:
+		card-id: ca-bundle-dir: ca-bundle-name: openssl-conf:
 		skip-cygwin-install use-cygwin64 no-install no-execute)
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
 	# there no short opts are specified (e.g., with -o).
@@ -338,6 +348,9 @@ process_opt() {
 			--only-steps)
 				add_only_steps $1
 				shift;;
+			--card-id)
+				set_card_id $1
+				shift;;
 			--ca-bundle-dir) Opts[ca-bundle-dir]=$1; shift;;
 			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
 			--openssl-conf) Opts[openssl-conf]=$1; shift;;
@@ -361,6 +374,10 @@ process_opt() {
 }
 
 detect_cac_card() {
+	if [[ -n $Card_id ]]; then
+		# No need for detection: user specified with option.
+		return 0
+	fi
 	# Note: Extract the desired id using pkcs15-tool
 	# Using reader with a card: Broadcom Corp Contacted SmartCard 0
 	# X.509 Certificate [Certificate for PIV Authentication]
@@ -403,7 +420,7 @@ install_cyg_pkg() {
 	# Note: libexpat-devel and gettext-devel appear to be hidden dependencies of various configure/make scripts.
 	local -a pkgs=(
 		info make binutils gcc-g++ libiconv-devel
-		git wget dos2unix patch
+		git dos2unix patch
 		libnss3 openssl openssl-devel libopenssl100
 		chkconfig pkg-config automake autoconf libtool cygwin-devel
 		libexpat-devel gettext-devel
@@ -455,7 +472,7 @@ build_opensc() {
 	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 	local libs=(libp11 engine_pkcs11 OpenSC)
 	for d in "${libs[@]}"; do
-		pushd $d;
+		pushd $d
 		# TODO: Make sure error handled as desired (with effective popd).
 		# simulate error somehow to test...
 		# TEMP DEBUG - Don't really install...
