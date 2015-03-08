@@ -368,7 +368,7 @@ detect_cac_card() {
 	# 		Authority      : no
 	# 		Path           : 
 	# 		ID             : 01
-	local Card_id=$(pkcs15-tool -c |
+	Card_id=$(pkcs15-tool -c |
 		sed -n -e '/PIV/,/ID/p' |
 		sed -n '$s/[[:space:]]*ID[[:space:]]*:[[:space:]]*\([0-9]\+\)[[:space:]]*/\1/p')
 
@@ -402,6 +402,7 @@ install_cyg_pkg() {
 	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
 	# Note: libexpat-devel and gettext-devel appear to be hidden dependencies of various configure/make scripts.
 	local -a pkgs=(
+		make binutils gcc-g++ libiconv-devel
 		info git wget dos2unix patch
 		libnss3 openssl openssl-devel libopenssl100
 		chkconfig pkg-config automake autoconf libtool cygwin-devel
