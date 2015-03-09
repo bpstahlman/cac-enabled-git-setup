@@ -1,4 +1,5 @@
 #! /bin/bash
+VERSION=0.9
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -308,7 +309,7 @@ process_opt() {
 	# TODO: Consider a different way, which would handle defaults.
 	# TODO: Perhaps put these in array, at least...
 	local -a longs=(
-		"help" list-steps
+		"help" version list-steps
 		start-step: end-step: skip-steps: only-steps:
 		card-id: ca-bundle-dir: ca-bundle-name: openssl-conf:
 		skip-cygwin-install use-cygwin64 no-install no-execute)
@@ -318,9 +319,16 @@ process_opt() {
 	# then, only if valid, to get the actual parsed options. Note that if validation fails, the stderr redirection
 	# ensures that I have the error text for reporting via error(); in the second call, the -q option ensures there can
 	# be no error text, so the redirection is harmless.
+	cmd='getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@"'
 	for mode in check real; do
-		if [[ $mode == check ]]; then quiet=-Q; else quiet=-q ; fi
-		local opts=$(getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@")
+		if [[ $mode == check ]]; then
+			quiet=-Q
+			# Caveat: Doing this way because the local assignment discards any error; eval doesn't.
+			eval $cmd
+		else
+			quiet=-q
+			local opts=$(eval $cmd)
+		fi
 		if (( $? )); then
 			error --usage "$opts"
 		fi
@@ -332,6 +340,9 @@ process_opt() {
 		case $v in
 			--help)
 				show_help
+				exit 0;;
+			--version)
+				echo "$(basename $0): A script to automate creation of a CAC-aware Git: Version $VERSION"
 				exit 0;;
 			--list-steps)
 				list_steps
