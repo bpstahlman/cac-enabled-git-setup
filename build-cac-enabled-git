@@ -4,7 +4,12 @@
 # Sources: Documents referenced on this page (especially the one by Jerry Quassar, entitled "Using git with CAC") and
 # lots of trial-and-error/debugging...
 # Date: 09 March 2015
-VERSION=0.9
+# --TODO--
+# 1. Replace --skip-cygwin-install to --install-cycwin so that the default is something that would work on Linux.
+#    Note: Possibly implement optional extra-packages arg for that option.
+#    Also Note: Doing it this way would impose an extra burden on pre-requisite checking: e.g.,
+#    can't use cygcheck on Linux system.
+VERSION=0.9.1
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -41,6 +46,7 @@ declare -a Steps=(
 	install_cyg_pkg
 	download_source
 	build_opensc
+	detect_cac_card
 	create_certs
 	patch_curl
 	build_curl
@@ -221,6 +227,9 @@ list_steps() {
 	    building).
 	build_opensc
 	    Build the OpenSC libraries/tools.
+	detect_cac_card
+	    Simultaneously verify opensc tool installation and determine the CAC slot
+	    id to be used to build various GIT_SSL_<...> environment vars.
 	create_certs
 	    Download 3 separate DOD root CA cert bundles, convert to .pem format, and
 	    combine with the default CA bundles provided with openssl to create a
@@ -388,28 +397,34 @@ process_opt() {
 		esac
 	done
 }
-
 detect_cac_card() {
 	if [[ -n $Card_id ]]; then
 		# No need for detection: user specified with option.
 		return 0
 	fi
-	# Note: Extract the desired id using pkcs15-tool
-	# Using reader with a card: Broadcom Corp Contacted SmartCard 0
-	# X.509 Certificate [Certificate for PIV Authentication]
-	# 		Object Flags   : [0x0]
-	# 		Authority      : no
-	# 		Path           : 
-	# 		ID             : 01
-	Card_id=$(pkcs15-tool -c |
-		sed -n -e '/PIV/,/ID/p' |
-		sed -n '$s/[[:space:]]*ID[[:space:]]*:[[:space:]]*\([0-9]\+\)[[:space:]]*/\1/p')
+	while [[ -z $Card_id ]]; do
+		# Note: Extract the desired id using pkcs15-tool (installed in earlier step).
+		# Using reader with a card: Broadcom Corp Contacted SmartCard 0
+		# X.509 Certificate [Certificate for PIV Authentication]
+		# 		Object Flags   : [0x0]
+		# 		Authority      : no
+		# 		Path           : 
+		# 		ID             : 01
+		Card_id=$(pkcs15-tool -c |
+			sed -n -e '/PIV/,/ID/p' |
+			sed -n '$s/[[:space:]]*ID[[:space:]]*:[[:space:]]*\([0-9]\+\)[[:space:]]*/\1/p')
 
-	# TODO: Allow user to insert and retry.
-	if [[ -z $Card_id ]]; then
-		# TODO: Clean up message.
-		error "Error: Cannot detect CAC card. Have you inserted it?"
-	fi
+		# TODO: Allow user to insert and retry.
+		if [[ -z $Card_id ]]; then
+			echo 2>&1 "Warning: Unable to detect CAC card. Insert now if you wish to continue."
+			echo 2>&1 "Continue? (y/[n])"
+			read ans
+			if [[ $ans != [yY] ]]; then
+				return 1
+				#error "Aborting setup"
+			fi
+		fi
+	done
 }
 check_prerequisites() {
 	# We really need only wget to boostrap things.
@@ -695,8 +710,6 @@ eof
 
 process_opt "$@"
 clean_env
-# Always detect CAC card, since the results of id detection may be needed in other steps.
-detect_cac_card
 check_prerequisites
 
 # Default mode from here on is to fail on error with indication of last step completed.
