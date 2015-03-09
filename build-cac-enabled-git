@@ -1,4 +1,9 @@
 #! /bin/bash
+# Synopsis: Automate the creation of a version of Git that can load PKCS11 engines to use a CAC card for authentication.
+# Author: Brett Pershing Stahlman
+# Sources: Documents referenced on this page (especially the one by Jerry Quassar, entitled "Using git with CAC") and
+# lots of trial-and-error/debugging...
+# Date: 09 March 2015
 VERSION=0.9
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
