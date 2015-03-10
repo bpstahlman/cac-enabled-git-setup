@@ -1,15 +1,13 @@
 #! /bin/bash
 # Synopsis: Automate the creation of a version of Git that can load PKCS11 engines to use a CAC card for authentication.
 # Author: Brett Pershing Stahlman
-# Sources: Documents referenced on this page (especially the one by Jerry Quassar, entitled "Using git with CAC") and
-# lots of trial-and-error/debugging...
+# Sources:
+# -The following document by Jerry Quassar, entitled "Using Native git with CAC":
+# https://rite.sd.spawar.navy.mil/confluence/display/RITE/Using+git+with+CAC
+# -Lots of trial-and-error/debugging.
 # Date: 09 March 2015
 # --TODO--
-# 1. Replace --skip-cygwin-install to --install-cycwin so that the default is something that would work on Linux.
-#    Note: Possibly implement optional extra-packages arg for that option.
-#    Also Note: Doing it this way would impose an extra burden on pre-requisite checking: e.g.,
-#    can't use cygcheck on Linux system.
-VERSION=0.9.1
+VERSION=0.9.2
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -20,6 +18,8 @@ Sys_git=/usr/bin/git
 Card_id=
 # Facilitate skipping install step when --no-install specified
 Make_install="make install"
+# System type: cygwin32 | cygwin64 | linux
+System_type=
 
 declare -i Step_idx=0
 # Container for steps specified with --skip-step
@@ -43,7 +43,7 @@ declare -A Opts=(
 )
 
 declare -a Steps=(
-	install_cyg_pkg
+	install_cygwin
 	download_source
 	build_opensc
 	detect_cac_card
@@ -129,7 +129,7 @@ show_help() {
 	# TODO: Finish converting this...
 	cat <<-eof
 	Usage: $prog [OPTION]...
-	Build a DOD-aware, CAC-enabled Git.
+	Build a PKCS#11-enabled Git that supports authentication with a DoD CAC card.
 
 	  -s, --start-step=STEP           start with STEP         
 	      --skip-steps=STEP[,STEP]... skip specified step(s)
@@ -147,8 +147,8 @@ show_help() {
 	                                  Default: /usr/ssl/pkcs11-openssl.cnf
 	      --skip-cygwin-install       only if you've already installed the cygwin
 	                                  package prerequisites yourself
-	      --use-cygwin64              install cygwin 64-bit packages - !UNTESTED!
-	      --no-install                builds without installing
+                                      NOTE: Option ignored on non-Windows systems
+	      --no-install                build without installing
 	      --no-execute                a sort of "dry run" - steps not executed
 	      --list-steps                list the steps (with short desc) and exit
 	      --help                      display this help and exit
@@ -160,9 +160,15 @@ show_help() {
 	  $prog --start-step create_certs
 
 	Prerequisites: (Before running...)
-	  This script assumes you have the default Cygwin "Base" package installed.
-	  It also assumes a working \`wget' in your path (may be obtained from the
-	  Cygwin "Web" package).
+	  Windows users:
+	    This script assumes you have the default Cygwin "Base" package installed.
+	    It also assumes a working \`wget' in your path (may be obtained from the
+	    Cygwin "Web" package).
+	  Linux users:
+	    This script assumes you have a standard Linux build toolchain, as well as
+		the following libraries:
+		  nss
+		  openssl
 
 	Running the script:
 	  1. Open the default Cygwin shell (runs an instance of Bash).
@@ -218,7 +224,7 @@ error() {
 }
 list_steps() {
 	cat <<-eof
-	install_cyg_pkg
+	install_cygwin
 	    Install Cygwin packages for NSS and OpenSSL, as well as some packages that
 	    will be required by the build process.
 	download_source
@@ -285,6 +291,8 @@ set_end_step() {
 	End_step=$1
 	Step_mode=range
 }
+# TODO: Currently, no validation performed on step names: invalid ones silently discarded. Not
+# particularly harmful, but aesthetically displeasing...
 add_skip_steps() {
 	if [[ $Step_mode == only ]]; then
 		error --usage "Illegal attempt to use --skip-steps: mutually-exclusive options specified"
@@ -310,6 +318,10 @@ set_card_id() {
 	fi
 	Card_id=$1
 }
+inhibit_cygwin_install() {
+	Skip_steps[install_cygwin]=yes
+}
+# TODO: Remove if obsolete...
 confirm_cygwin64() {
 	echo >&2 "Warning! This script has not been tested on 64-bit versions of Cygwin."
 	echo >&2 "Do you wish to proceed? (y/[n])"
@@ -317,6 +329,28 @@ confirm_cygwin64() {
 	if [[ $ans != [yY] ]]; then
 		return 1
 	fi
+}
+detect_os() {
+	shopt -s nocasematch
+	# Check system (kernel)
+	# Note: -o would be more convenient, but it's an illegal option on some systems (e.g., OS X);
+	# -s is valid on *all* systems, -m is valid on Cygwin.
+	case "$(uname -s)" in
+		*CYGWIN*)
+			# Check machine type (32/64-bit)
+			case "$(uname -m)" in
+				x86_64)
+					System_type=cygwin64;;
+				*)
+					# Default to safest choice.
+					System_type=cygwin32;;
+			esac;;
+					
+		*)
+			# Assume some variant of Linux / OS X
+			System_type=linux;;
+	esac
+	shopt -u nocasematch
 }
 # Assumption: errexit option has not yet been enabled.
 process_opt() {
@@ -326,14 +360,15 @@ process_opt() {
 		"help" version list-steps
 		start-step: end-step: skip-steps: only-steps:
 		card-id: ca-bundle-dir: ca-bundle-name: openssl-conf:
-		skip-cygwin-install use-cygwin64 no-install no-execute)
+		skip-cygwin-install no-install no-execute)
+	local shorts='s:e:'
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
 	# there no short opts are specified (e.g., with -o).
 	# Getopt workaround: To facilitate proper error reporting, I'm calling getopt up to twice: once to validate, and
 	# then, only if valid, to get the actual parsed options. Note that if validation fails, the stderr redirection
 	# ensures that I have the error text for reporting via error(); in the second call, the -q option ensures there can
 	# be no error text, so the redirection is harmless.
-	cmd='getopt 2>&1 $quiet -os: -l$(IFS=, ; echo "${longs[*]}") -- "$@"'
+	cmd='getopt 2>&1 $quiet -o$shorts -l$(IFS=, ; echo "${longs[*]}") -- "$@"'
 	for mode in check real; do
 		if [[ $mode == check ]]; then
 			quiet=-Q
@@ -364,7 +399,7 @@ process_opt() {
 			-s | --start-step)
 				set_start_step $1
 				shift;;
-			--end-step)
+			-e | --end-step)
 				set_end_step $1
 				shift;;
 			--skip-steps)
@@ -383,12 +418,7 @@ process_opt() {
 			--skip-cygwin-install)
 				Opts[skip-cygwin-install]=yes
 				# This option is really just syntactic sugar.
-				Skip_steps[install_cyg_pkg]=yes;;
-			--use-cygwin64)
-				if ! confirm_cygwin64; then
-					exit 0
-				fi
-				Opts[use-cygwin64]=yes;;
+				inhibit_cygwin_install;;
 			--no-install)
 				Opts[no-install]=yes
 				Make_install="echo Skipping install...";;
@@ -396,6 +426,10 @@ process_opt() {
 				Opts[no-execute]=yes;;
 		esac
 	done
+}
+# React to values of certain options, now that all have been set and detection is complete.
+post_process_opt() {
+	[[ $System_type != cygwin* ]] && inhibit_cygwin_install
 }
 detect_cac_card() {
 	if [[ -n $Card_id ]]; then
@@ -443,8 +477,8 @@ check_prerequisites() {
 # Note: Using setup -P for an already-installed package appears to re-install harmlessly.
 # TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
 # Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
-# setup gui and re-run with --skip-cygwin-install or --skip-step install_cyg_pkg.
-install_cyg_pkg() {
+# setup gui and re-run with --skip-cygwin-install or --skip-step install_cygwin.
+install_cygwin() {
 	# TODO: Document purpose of all these...
 	# Caveat: Make sure info pkg is installed first.
 	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
@@ -457,7 +491,9 @@ install_cyg_pkg() {
 		libexpat-devel gettext-devel
 	)
 	# Obtain latest copy of appropriate setup program and make executable.
-	local url=https://cygwin.com/setup-x86${Opts[use-cygwin64]:+_64}.exe
+	local url=https://cygwin.com/setup-x86$([[ $System_type == cygwin64 ]] && echo "_64").exe
+echo "Debug: $url"
+return 0
 	local opt="-q -N -d -W -B"
 	local setup=./${url##*/}
 	wget -O $setup $url
@@ -708,18 +744,17 @@ alias ncgit=/usr/bin/git
 eof
 }
 
+detect_os
 process_opt "$@"
+post_process_opt
 clean_env
 check_prerequisites
 
 # Default mode from here on is to fail on error with indication of last step completed.
-# Note: Step functions with a need (e.g., install_cyg_pkg) may *temporarily* unset.
+# Note: Step functions with a need (e.g., install_cygwin) may *temporarily* unset.
 # Caveat: Take care not to generate spurious errors: e.g., do ((++var)) instead of ((var++) when var could be 0.
 set -e
 trap on_exit EXIT
 run
-
-# Short-term TODO
-# 1. Add cygwin 64 option
 
 # vim:ts=4:sw=4:tw=120
