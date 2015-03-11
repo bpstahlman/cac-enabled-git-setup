@@ -75,3 +75,5 @@ If you have a working X server and wish to use GUI password prompts, simply set 
 > **Note:** Entering passwords this way may seem a bit awkward at first, but keep in mind that you won't need to enter a pin until you do something that hits the server, and a typical Git workflow involves predominantly local manipulations/visualizations.
 > **Also Note:** A future version of this script may use the _OpenSSL_ UI customization API to build a custom openssl library, which supports GUI prompts.
 
+# Attributions
+Much of the background material used to develop this script came from an article by Jerry Quassar, entitled [Using git with CAC](https://rite.sd.spawar.navy.mil/confluence/display/RITE/Using+git+with+CAC).
