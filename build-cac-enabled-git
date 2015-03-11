@@ -7,7 +7,7 @@
 # -Lots of trial-and-error/debugging.
 # Date: 09 March 2015
 # --TODO--
-VERSION=0.9.2
+VERSION=0.9.3
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -43,7 +43,6 @@ declare -A Opts=(
 )
 
 declare -a Steps=(
-	install_cygwin
 	download_source
 	build_opensc
 	detect_cac_card
@@ -145,8 +144,8 @@ show_help() {
 	      --openssl-conf=PATH         full path for generated openssl conf file
 	                                  CAVEAT: Directory must exist.
 	                                  Default: /usr/ssl/pkcs11-openssl.cnf
-	      --skip-cygwin-install       only if you've already installed the cygwin
-	                                  package prerequisites yourself
+	      --skip-cygwin-x             if you don't want Cygwin X server installed
+	                                  (e.g., you don't plan to run graphical git)
                                       NOTE: Option ignored on non-Windows systems
 	      --no-install                build without installing
 	      --no-execute                a sort of "dry run" - steps not executed
@@ -156,7 +155,7 @@ show_help() {
 
 	Examples:
 	  $prog --ca-bundle-dir=~/my-certs --openssl-conf=~/my-conf/openssl.conf
-	  $prog --skip-cygwin-install
+	  $prog --skip-cygwin-x
 	  $prog --start-step create_certs
 
 	Prerequisites: (Before running...)
@@ -224,7 +223,7 @@ error() {
 }
 list_steps() {
 	cat <<-eof
-	install_cygwin
+	install_cygwin (Windows Only - unconditional prerequisite check)
 	    Install Cygwin packages for NSS and OpenSSL, as well as some packages that
 	    will be required by the build process.
 	download_source
@@ -277,9 +276,13 @@ expand_path() {
 		echo ${1/#~\//$HOME/}
 	fi
 }
+# TODO: Refactor (parameterize) to avoid code duplication across these 4 functions.
 set_start_step() {
 	if [[ $Step_mode == only ]]; then
 		error --usage "Illegal attempt to use --start-step: mutually-exclusive options specified"
+	fi
+	if ! check_step "$1"; then
+		error --usage "Unknown or invalid step specified with --start-step: $1"
 	fi
 	Start_step=$1
 	Step_mode=range
@@ -288,17 +291,21 @@ set_end_step() {
 	if [[ $Step_mode == only ]]; then
 		error --usage "Illegal attempt to use --end-step: mutually-exclusive options specified"
 	fi
+	if ! check_step "$1"; then
+		error --usage "Unknown or invalid step specified with --end-step: $1"
+	fi
 	End_step=$1
 	Step_mode=range
 }
-# TODO: Currently, no validation performed on step names: invalid ones silently discarded. Not
-# particularly harmful, but aesthetically displeasing...
 add_skip_steps() {
 	if [[ $Step_mode == only ]]; then
 		error --usage "Illegal attempt to use --skip-steps: mutually-exclusive options specified"
 	fi
 	# Update hash of steps to skip.
 	for s in ${1//,/ }; do
+		if ! check_step "$s"; then
+			error --usage "Unknown or invalid step specified with --skip-steps: $s"
+		fi
 		Skip_steps[$s]=yes
 	done
 }
@@ -308,6 +315,9 @@ add_only_steps() {
 	fi
 	# Update hash of steps to run
 	for s in ${1//,/ }; do
+		if ! check_step "$s"; then
+			error --usage "Unknown or invalid step specified with --only-steps: $s"
+		fi
 		Only_steps[$s]=yes
 	done
 	Step_mode=only
@@ -360,7 +370,7 @@ process_opt() {
 		"help" version list-steps
 		start-step: end-step: skip-steps: only-steps:
 		card-id: ca-bundle-dir: ca-bundle-name: openssl-conf:
-		skip-cygwin-install no-install no-execute)
+		skip-cygwin-x no-install no-execute)
 	local shorts='s:e:'
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
 	# there no short opts are specified (e.g., with -o).
@@ -414,11 +424,8 @@ process_opt() {
 			--ca-bundle-dir) Opts[ca-bundle-dir]=$1; shift;;
 			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
 			--openssl-conf) Opts[openssl-conf]=$1; shift;;
-			# TODO: Perhaps just use the --skip-step mechanism internally.
-			--skip-cygwin-install)
-				Opts[skip-cygwin-install]=yes
-				# This option is really just syntactic sugar.
-				inhibit_cygwin_install;;
+			--skip-cygwin-x)
+				Opts[skip-cygwin-x]=yes;;
 			--no-install)
 				Opts[no-install]=yes
 				Make_install="echo Skipping install...";;
@@ -460,25 +467,52 @@ detect_cac_card() {
 		fi
 	done
 }
+# Return success if and only if input step is valid
+check_step() {
+	if ! grep -q "\\<$1\\>" <<<"${Steps[@]}"; then
+		# Unknown step
+		return 1
+	fi
+	# Assumption: All cygwin options have cygwin in the name.
+	if [[ $System_type != cygwin* && $1 == *cygwin* ]]; then
+		# Inapplicable step.
+		return 2
+	fi
+}
+# Return success if and only if we can positively verify successful package installation.
+# Note: A false positive is preferred over a false negative.
+check_cygwin_package() {
+	grep -q "$1[[:space:]].*[[:space:]]\\+OK" <<<$(cygcheck -c $1);
+}
+# TODO: More sophisticated dependency checking: e.g., can use cygcheck for Cygwin.
+# really need.
 check_prerequisites() {
-	# We really need only wget to boostrap things.
-	# Caveat: Name of exe and associated package may differ.
-	# TODO: No need for loop mechanism if this ends up being the only one...
-	local -A exes=([wget]=wget)
-	for exe in ${!exes[@]}; do
-		if [[ -z $Opts[skip-cygwin-install] ]] && ! which $exe; then
-			error "Prerequisite not met: This script cannot proceed without a working \`$exe' program." \
-				"Suggested remedy: Install package \`${exes[$exe]}' using Cygwin installer and rerun this script."
+	if [[ $System_type == cygwin* ]]; then
+		if ! which wget &>/dev/null; then
+			error "Prerequisite not met: Cannot proceed without a working \`wget'." \
+				"Suggested remedy: Install \`wget' from the Web category using Cygwin installer," \
+				"then re-run."
 		fi
-	done
+	else
+		# Linux
+		# Design Decision: For now, just check the easy stuff: things that can be checked without
+		# autoconf, etc...
+		local -a exes=(git make patch)
+		for exe in "${exes[@]}"; do
+			if ! which "$exe" &>/dev/null; then
+				error "Prerequisite not met: Cannot proceed without a working \`$exe'. Use your" \
+				"package manager to install, then re-run."
+			fi
+		done
+	fi
 }
 # Caveat: Running cygwin setup program standalone fails if the install-info
 # utility is not in the path. Appears to be a cygwin bug/oversight.
 # Note: Using setup -P for an already-installed package appears to re-install harmlessly.
-# TODO: Provide special arg for skipping cygwin install (so user needn't know which step follows).
-# Important Note: If unattended setup causes problems on user's machine, he can install the packages himself through the
-# setup gui and re-run with --skip-cygwin-install or --skip-step install_cygwin.
+# Important Note: If unattended setup causes problems on user's machine, he can install the packages
+# himself through the setup gui, in which case, cygcheck should prevent any actual installs.
 install_cygwin() {
+	log --ts "Starting installation of Cygwin prerequisites..."
 	# TODO: Document purpose of all these...
 	# Caveat: Make sure info pkg is installed first.
 	# Rationale: I've run into issues attempting to install packages when install-info (in info package) didn't exist.
@@ -490,10 +524,11 @@ install_cygwin() {
 		chkconfig pkg-config automake autoconf libtool cygwin-devel
 		libexpat-devel gettext-devel
 	)
+	if [[ -z ${Opts[skip-cygwin-x]} ]]; then
+		pkgs+=(xorg-server xinit)
+	fi
 	# Obtain latest copy of appropriate setup program and make executable.
 	local url=https://cygwin.com/setup-x86$([[ $System_type == cygwin64 ]] && echo "_64").exe
-echo "Debug: $url"
-return 0
 	local opt="-q -N -d -W -B"
 	local setup=./${url##*/}
 	wget -O $setup $url
@@ -502,11 +537,19 @@ return 0
 	# Rationale: Cygwin setup "quiet" mode doesn't handle dependencies well at all.
 	# Cygwin setup tends to generate spurious (but apparently harmless) errors, so temporarily turn off errexit.
 	set +e
-	$setup $opt -C base
+	# Note: Cygwin Base is a prereq, so we could probably dispense with its installation, but just
+	# to be safe, we'll install Base if system looks strange...
+	if ! which cygcheck &>/dev/null; then
+		$setup $opt -C base
+	fi
 	for p in "${pkgs[@]}"; do
-		$setup $opt -P "$p"
+		# Skip already-installed packages.
+		if ! check_cygwin_package "$p"; then
+			$setup $opt -P "$p"
+		fi
 	done
 	set -e
+	log --ts "Finished installation of Cygwin prerequisites..."
 }
 # Make sure there's nothing in the environment (e.g., from a previous run), that could mess us up (e.g., GIT_SSL_<...>
 # vars that could cause the vanilla git to attempt to use the CAC card).
@@ -749,6 +792,9 @@ process_opt "$@"
 post_process_opt
 clean_env
 check_prerequisites
+# Note: This is sort of a "pseudo-step", which runs only on Windows.
+# TODO: Consider making part of prerequisite check...
+[[ $System_type == cygwin* ]] && install_cygwin
 
 # Default mode from here on is to fail on error with indication of last step completed.
 # Note: Step functions with a need (e.g., install_cygwin) may *temporarily* unset.
