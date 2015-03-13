@@ -1,5 +1,6 @@
 # cac-enabled-git-setup
-Bash script that builds (on Windows or Linux) a version of Git capable of using a CAC card for authentication.
+Bash script that builds (on Windows) a version of Git capable of using a CAC card for authentication.
+### **Caveat!** Support for Linux is not quite ready...
 
 # Before you start...
 - Obviously, you'll need a government-issued CAC card.
