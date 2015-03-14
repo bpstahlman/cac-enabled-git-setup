@@ -7,7 +7,7 @@
 # -Lots of trial-and-error/debugging.
 # Date: 09 March 2015
 # --TODO--
-VERSION=0.9.3
+VERSION=0.9.4
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -37,9 +37,9 @@ Step_mode=normal # normal | range | only
 
 # Note: A missing boolean option is considered unset.
 declare -A Opts=(
-	[ca-bundle-dir]=/usr/ssl/certs
-	[ca-bundle-name]=ca-bundle-plus-dod-root
-	[openssl-conf]=/usr/ssl/pkcs11-openssl.cnf
+	[ca-bundle-in]=http://curl.haxx.se/ca/cacert.pem
+	[ca-bundle-out]=~/ca-bundle-plus-dod-root.pem
+	[openssl-conf]=~/pkcs11-openssl.cnf
 )
 
 declare -a Steps=(
@@ -116,7 +116,7 @@ log() {
 # Display usage message on stderr
 usage() {
 	# TODO: Path or not?
-	local prog=$(basename $0)
+	local prog=$(basename "$0")
 	cat >&2 <<-eof
 		Usage: $prog [OPTION]...
 		Try '$prog --help' for more information.
@@ -137,10 +137,11 @@ show_help() {
 	      --card-id=XX                2-digit smart card id
 	                                  Note: Can be detected by script if CAC card
 	                                  is inserted.
-	      --ca-bundle-dir=DIR         where to put generated ca-bundle
-	                                  Default: /usr/ssl/certs
-	      --ca-bundle-name=NAME       basename for generated ca-bundle
-	                                  Default: ca-bundle-plus-dod-root
+	      --ca-bundle-in=PATH|URL     where to obtain ca-bundle (preferably
+	                                  Mozilla's cert bundle in .pem format)
+	                                  Default: ${Opts[ca-bundle-in]}
+	      --ca-bundle-out=PATH        where to put generated ca-bundle
+	                                  Default: ${Opts[ca-bundle-out]}
 	      --openssl-conf=PATH         full path for generated openssl conf file
 	                                  CAVEAT: Directory must exist.
 	                                  Default: /usr/ssl/pkcs11-openssl.cnf
@@ -154,7 +155,8 @@ show_help() {
 	      --version                   output version information and exit
 
 	Examples:
-	  $prog --ca-bundle-dir=~/my-certs --openssl-conf=~/my-conf/openssl.conf
+	  $prog --ca-bundle-out=~/my-certs/my-ca-bundle.pem
+	  $prog --openssl-conf=~/my-conf/openssl.conf
 	  $prog --skip-cygwin-x
 	  $prog --start-step create_certs
 
@@ -273,7 +275,7 @@ expand_path() {
 	if [[ $1 == "~" ]]; then
 		echo "$HOME"
 	else
-		echo ${1/#~\//$HOME/}
+		echo "${1/#~\//$HOME/}"
 	fi
 }
 # TODO: Refactor (parameterize) to avoid code duplication across these 4 functions.
@@ -328,9 +330,6 @@ set_card_id() {
 	fi
 	Card_id=$1
 }
-inhibit_cygwin_install() {
-	Skip_steps[install_cygwin]=yes
-}
 # TODO: Remove if obsolete...
 confirm_cygwin64() {
 	echo >&2 "Warning! This script has not been tested on 64-bit versions of Cygwin."
@@ -340,27 +339,29 @@ confirm_cygwin64() {
 		return 1
 	fi
 }
-detect_os() {
-	shopt -s nocasematch
+detect_system() {
+	local -l system=$(uname -s)
+	local -l machine=$(uname -m)
 	# Check system (kernel)
 	# Note: -o would be more convenient, but it's an illegal option on some systems (e.g., OS X);
 	# -s is valid on *all* systems, -m is valid on Cygwin.
-	case "$(uname -s)" in
-		*CYGWIN*)
+	case $system in
+		*cygwin*)
 			# Check machine type (32/64-bit)
-			case "$(uname -m)" in
+			case $machine in
 				x86_64)
 					System_type=cygwin64;;
 				*)
 					# Default to safest choice.
 					System_type=cygwin32;;
 			esac;;
-					
+		*ubuntu*)
+			# Don't really care about machine type (confirm)
+			System_type=ubuntu;;
 		*)
 			# Assume some variant of Linux / OS X
 			System_type=linux;;
 	esac
-	shopt -u nocasematch
 }
 # Assumption: errexit option has not yet been enabled.
 process_opt() {
@@ -369,7 +370,7 @@ process_opt() {
 	local -a longs=(
 		"help" version list-steps
 		start-step: end-step: skip-steps: only-steps:
-		card-id: ca-bundle-dir: ca-bundle-name: openssl-conf:
+		card-id: ca-bundle-in: ca-bundle-out: openssl-conf:
 		skip-cygwin-x no-install no-execute)
 	local shorts='s:e:'
 	# getopt idiosyncrasy: 1st arg specified to a long opt intended to be used to build an array can lose the 1st arg if
@@ -401,7 +402,7 @@ process_opt() {
 				show_help
 				exit 0;;
 			--version)
-				echo "$(basename $0): A script to automate creation of a CAC-aware Git: Version $VERSION"
+				echo "$(basename "$0"): A script to automate creation of a CAC-aware Git: Version $VERSION"
 				exit 0;;
 			--list-steps)
 				list_steps
@@ -421,8 +422,8 @@ process_opt() {
 			--card-id)
 				set_card_id $1
 				shift;;
-			--ca-bundle-dir) Opts[ca-bundle-dir]=$1; shift;;
-			--ca-bundle-name) Opts[ca-bundle-name]=$1; shift;;
+			--ca-bundle-in) Opts[ca-bundle-in]=$1; shift;;
+			--ca-bundle-out) Opts[ca-bundle-out]=$1; shift;;
 			--openssl-conf) Opts[openssl-conf]=$1; shift;;
 			--skip-cygwin-x)
 				Opts[skip-cygwin-x]=yes;;
@@ -436,7 +437,6 @@ process_opt() {
 }
 # React to values of certain options, now that all have been set and detection is complete.
 post_process_opt() {
-	[[ $System_type != cygwin* ]] && inhibit_cygwin_install
 }
 detect_cac_card() {
 	if [[ -n $Card_id ]]; then
@@ -479,39 +479,27 @@ check_step() {
 		return 2
 	fi
 }
+do_prereq() {
+	# Invoke the system-dependent prerequisite function.
+	do_prereq_${System_type} "$@"
+}
 # Return success if and only if we can positively verify successful package installation.
 # Note: A false positive is preferred over a false negative.
 check_cygwin_package() {
 	grep -q "$1[[:space:]].*[[:space:]]\\+OK" <<<$(cygcheck -c $1);
-}
-# TODO: More sophisticated dependency checking: e.g., can use cygcheck for Cygwin.
-# really need.
-check_prerequisites() {
-	if [[ $System_type == cygwin* ]]; then
-		if ! which wget &>/dev/null; then
-			error "Prerequisite not met: Cannot proceed without a working \`wget'." \
-				"Suggested remedy: Install \`wget' from the Web category using Cygwin installer," \
-				"then re-run."
-		fi
-	else
-		# Linux
-		# Design Decision: For now, just check the easy stuff: things that can be checked without
-		# autoconf, etc...
-		local -a exes=(git make patch)
-		for exe in "${exes[@]}"; do
-			if ! which "$exe" &>/dev/null; then
-				error "Prerequisite not met: Cannot proceed without a working \`$exe'. Use your" \
-				"package manager to install, then re-run."
-			fi
-		done
-	fi
 }
 # Caveat: Running cygwin setup program standalone fails if the install-info
 # utility is not in the path. Appears to be a cygwin bug/oversight.
 # Note: Using setup -P for an already-installed package appears to re-install harmlessly.
 # Important Note: If unattended setup causes problems on user's machine, he can install the packages
 # himself through the setup gui, in which case, cygcheck should prevent any actual installs.
-install_cygwin() {
+do_prereq_cygwin() {
+	# Make sure latest setup program can be downloaded.
+	if ! which wget &>/dev/null; then
+		error "Prerequisite not met: Cannot proceed without a working \`wget'." \
+			"Suggested remedy: Install \`wget' from the Web category using Cygwin installer," \
+			"then re-run."
+	fi
 	log --ts "Starting installation of Cygwin prerequisites..."
 	# TODO: Document purpose of all these...
 	# Caveat: Make sure info pkg is installed first.
@@ -551,6 +539,47 @@ install_cygwin() {
 	set -e
 	log --ts "Finished installation of Cygwin prerequisites..."
 }
+do_prereq_cygwin32() {
+	do_prereq_cygwin "$@"
+}
+do_prereq_cygwin64() {
+	do_prereq_cygwin "$@"
+}
+do_prereq_ubuntu() {
+	# Notes:
+	# git needed to obtain source
+	# libssl-dev needed so that OpenSSL can be found
+	# libpcsclite-dev needed because of OpenSC build dependency on winscard.h
+	# TODO: Add libiconv-dev
+	# TODO: Consider adding gcc, make, etc..., but should already be there...
+	local -a pkgs=(
+		git
+		autoconf automake m4
+		gettext libtool
+		openssl libssl-dev
+		libpcsclite-dev
+		libexpat1-dev
+	)
+	log --ts "Installing ubuntu prerequisite packages: ${pkgs[@]}..."
+	sudo apt-get install $pkgs
+	log --ts "Finished installing ubuntu prerequisite packages..."
+}
+do_prereq_linux() {
+	# Generic Linux
+	# TODO: Inform user of what packages are needed, and present him with options: e.g.,
+	# 1) I have them. Proceed.
+	# 2) I don't have them. Abort.
+	# TODO: Remove stuff below...
+	# Design Decision: For now, just check the easy stuff: things that can be checked without
+	# autoconf, etc...
+	local -a exes=(git make patch)
+	for exe in "${exes[@]}"; do
+		if ! which "$exe" &>/dev/null; then
+			error "Prerequisite not met: Cannot proceed without a working \`$exe'. Use your" \
+			"package manager to install, then re-run."
+		fi
+	done
+}
 # Make sure there's nothing in the environment (e.g., from a previous run), that could mess us up (e.g., GIT_SSL_<...>
 # vars that could cause the vanilla git to attempt to use the CAC card).
 clean_env() {
@@ -578,34 +607,47 @@ download_source() {
 	done
 }
 build_opensc() {
-	# Caveat: If we don't set PKG_CONFIG_PATH, the libp11 we're about to build won't be found in subsequent build steps.
-	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+	if [[ $System_type == cygwin* ]]; then
+		# Caveat: If we don't set PKG_CONFIG_PATH, the libp11 we're about to build won't be found in subsequent build steps.
+		export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+	fi
 	local libs=(libp11 engine_pkcs11 OpenSC)
 	for d in "${libs[@]}"; do
-		pushd $d
+		pushd "$d"
 		# TODO: Make sure error handled as desired (with effective popd).
 		# simulate error somehow to test...
 		# TEMP DEBUG - Don't really install...
-		./bootstrap && ./configure && make && $Make_install && popd
+		./bootstrap && ./configure && make && $Make_install
+		popd
 	done
+	# Workaround an issue (at least in Ubuntu) whereby ldconfig cache is not rebuilt properly.
+	# Explanation: opensc build script invokes ldconfig -n /usr/local/lib, which doesn't add the libopensc shared lib
+	# (probably because of the -n option - not sure why it's used).
+	ldconfig /usr/local/lib
 }
 create_certs() {
-	# Make sure the directory exists.
-	local dir="${Opts[ca-bundle-dir]}"
-	if [[ ! -d $dir ]]; then
+	# Make sure file has a valid extension.
+	if [[ ${Opts[ca-bundle-out]} != *.pem && ${Opts[ca-bundle-out]} != *.crt ]]; then
+		warn "Adding .pem extension to ca-bundle ${Opts[ca-bundle-out]}"
+		Opts[ca-bundle-out]+=.pem
+	fi
+	# Create the dir if necessary.
+	local dir=${Opts[ca-bundle-out]/%$(basename "${Opts[ca-bundle-out]}")/}
+	if [[ ! -d "$dir" ]]; then
 	   mkdir -p "$dir"
 	fi
-	local cert_path="$dir/${Opts[ca-bundle-name]}.pem"
-	# Seed the file with the CA bundles that ship with openssl
-	cat /usr/ssl/certs/ca-bundle{,.trust}.crt >"$cert_path"
+	# Seed the file with a daily build of Mozilla's CA bundles (provided by cURL)
+	# Note: Could also use the bundle(s) supplied with openssl (e.g., in /usr/ssl/certs), but the location is too
+	# unpredictable...
+	# Use cat or wget as appropriate to get the ca bundle.
+	$([[ ${Opts[ca-bundle-in]} == http* ]] && echo wget || echo cat) ${Opts[ca-bundle-in]} >"${Opts[ca-bundle-out]}"
 
 	# Append the DOD root certs (after converting from .p7b to .pem format)
 	local certs=(rel3_dodroot_2048 dodeca dodeca2)
 	local url=http://dodpki.c3pki.chamb.disa.mil
 	for cert in "${certs[@]}"; do
 		wget -O- $url/$cert.p7b | openssl pkcs7 -inform DER -outform PEM -print_certs
-	done >>"$cert_path"
-	# TODO: Perhaps make the above just a full path.
+	done >>"${Opts[ca-bundle-out]}"
 }
 # TODO: Decide whether these patches should be part of a package or here-docs.
 patch_curl() {
@@ -650,10 +692,12 @@ patch_curl() {
 build_curl() {
 	pushd curl
 	# Note: curl from github doesn't come with a configure script.
-	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem" && make && $Make_install
+	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-out]}" && make && $Make_install
 	popd
 }
 configure_openssl_conf() {
+	# Note: Account for difference in shared library extensions between Cygwin/Linux.
+	local ext=$([[ $System_type == cygwin* ]] && echo dll || echo so)
 	# Important Note: install_env_script will add the env var curl uses to find and load this.
 	cat <<-'eof' > "${Opts[openssl-conf]}"
 	openssl_conf = openssl_def
@@ -663,8 +707,8 @@ configure_openssl_conf() {
 	pkcs11 = pkcs11_section
 	[pkcs11_section]
 	engine_id = pkcs11
-	dynamic_path = /usr/local/lib/engines/engine_pkcs11.dll
-	MODULE_PATH = /usr/local/lib/opensc-pkcs11.dll
+	dynamic_path = /usr/local/lib/engines/engine_pkcs11.$ext
+	MODULE_PATH = /usr/local/lib/opensc-pkcs11.$ext
 	init = 0
 	[req]
 	distinguished_name = req_distinguished_name
@@ -756,7 +800,7 @@ enable_cac_aware_git() {
 	# Add environment vars needed for CAC-enabled Git
 	export GIT_SSL_CERT=slot_01-id_$Card_id
 	export GIT_SSL_KEY=slot_01-id_$Card_id
-	export GIT_SSL_CAINFO="${Opts[ca-bundle-dir]}/${Opts[ca-bundle-name]}.pem"
+	export GIT_SSL_CAINFO="${Opts[ca-bundle-out]}"
 	export GIT_SSL_ENGINE=pkcs11
 	export GIT_SSL_KEYTYPE=ENG
 	export GIT_SSL_CERTTYPE=ENG
@@ -766,6 +810,9 @@ enable_cac_aware_git() {
 
 	# Keep Git from using the Tk-based askpass gui (which has an X11 dependency that may not be satisfied) before
 	# defaulting to the console-based prompt.
+	# Note: The inhibit could also be accomplished by setting GIT_ASKPASS to empty string, but that would impact
+	# non-CAC Git(s) as well, and there may be reasons we want it inhibited only for the CAC-aware Git (e.g, you're
+	# goint to have to enter PKCS#11 pin at tty anyways).
 	export GIT_INHIBIT_ASKPASS=yes
 }
 disable_cac_aware_git() {
@@ -787,14 +834,11 @@ alias ncgit=/usr/bin/git
 eof
 }
 
-detect_os
+detect_system
 process_opt "$@"
 post_process_opt
 clean_env
-check_prerequisites
-# Note: This is sort of a "pseudo-step", which runs only on Windows.
-# TODO: Consider making part of prerequisite check...
-[[ $System_type == cygwin* ]] && install_cygwin
+do_prereq
 
 # Default mode from here on is to fail on error with indication of last step completed.
 # Note: Step functions with a need (e.g., install_cygwin) may *temporarily* unset.
