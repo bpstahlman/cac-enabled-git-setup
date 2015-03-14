@@ -12,6 +12,7 @@ VERSION=0.9.4
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
 # Make sure we have an unmodified git we can use to clone source repos.
+# TODO: This should probably be obtained more reliably...
 Sys_git=/usr/bin/git
 # This will be detected and set in detect_cac_card.
 # Possible TODO: This can also be set by option now. Perhaps put in Opts[]
@@ -190,7 +191,7 @@ show_help() {
 	  Upon successful termination of this script, you should have a CAC-aware Git
 	  in your path (/usr/local/bin), and a startup script in /etc/profile.d, which
 	  automatically makes the environment changes needed to use the CAC-aware Git
-	  each time you start a Cygwin shell.
+	  each time you start a shell.
 
 	  Note: If you wish to inhibit loading the PKCS11 engine temporarily, you have
 	  several options:
@@ -342,6 +343,11 @@ confirm_cygwin64() {
 detect_system() {
 	local -l system=$(uname -s)
 	local -l machine=$(uname -m)
+	local -l version=$(uname -v)
+
+	# Default to generic Linux.
+	System_type=linux
+
 	# Check system (kernel)
 	# Note: -o would be more convenient, but it's an illegal option on some systems (e.g., OS X);
 	# -s is valid on *all* systems, -m is valid on Cygwin.
@@ -355,12 +361,12 @@ detect_system() {
 					# Default to safest choice.
 					System_type=cygwin32;;
 			esac;;
-		*ubuntu*)
-			# Don't really care about machine type (confirm)
-			System_type=ubuntu;;
-		*)
-			# Assume some variant of Linux / OS X
-			System_type=linux;;
+		*linux*)
+			case $version in
+				*ubuntu*)
+					# Don't really care about machine type (confirm)
+					System_type=ubuntu;;
+			esac;;
 	esac
 }
 # Assumption: errexit option has not yet been enabled.
@@ -437,6 +443,7 @@ process_opt() {
 }
 # React to values of certain options, now that all have been set and detection is complete.
 post_process_opt() {
+	:
 }
 detect_cac_card() {
 	if [[ -n $Card_id ]]; then
@@ -561,7 +568,8 @@ do_prereq_ubuntu() {
 		libexpat1-dev
 	)
 	log --ts "Installing ubuntu prerequisite packages: ${pkgs[@]}..."
-	sudo apt-get install $pkgs
+	# Assumption: Script is running with root privileges (e.g., sudo).
+	apt-get install "${pkgs[@]}"
 	log --ts "Finished installing ubuntu prerequisite packages..."
 }
 do_prereq_linux() {
@@ -623,6 +631,7 @@ build_opensc() {
 	# Workaround an issue (at least in Ubuntu) whereby ldconfig cache is not rebuilt properly.
 	# Explanation: opensc build script invokes ldconfig -n /usr/local/lib, which doesn't add the libopensc shared lib
 	# (probably because of the -n option - not sure why it's used).
+	# Assumption: Script is running with root privileges (e.g., sudo).
 	ldconfig /usr/local/lib
 }
 create_certs() {
@@ -699,7 +708,7 @@ configure_openssl_conf() {
 	# Note: Account for difference in shared library extensions between Cygwin/Linux.
 	local ext=$([[ $System_type == cygwin* ]] && echo dll || echo so)
 	# Important Note: install_env_script will add the env var curl uses to find and load this.
-	cat <<-'eof' > "${Opts[openssl-conf]}"
+	cat <<-eof > "${Opts[openssl-conf]}"
 	openssl_conf = openssl_def
 	[openssl_def]
 	engines = engine_section
