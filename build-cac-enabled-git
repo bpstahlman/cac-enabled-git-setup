@@ -7,7 +7,7 @@
 # -Lots of trial-and-error/debugging.
 # Date: 09 March 2015
 # --TODO--
-VERSION=0.9.5
+VERSION=0.9.6
 # Starting cwd is base of operations.
 # TODO: Check to be sure it seems to contain the package.
 Basedir=$PWD
@@ -881,7 +881,7 @@ add_env_script_links() {
 	fi
 }
 write_env_script() {
-	if [[ ${Opts[env-script]} != /dev/null ]]; then
+	if [[ ${Opts[env-script]} == /dev/null ]]; then
 		return 0
 	fi
 	# TODO: Consider putting the cac id detection there also (in case slot id moves)...
