@@ -563,10 +563,11 @@ do_prereq_ubuntu() {
 	# git needed to obtain source
 	# libssl-dev needed so that OpenSSL can be found
 	# libpcsclite-dev needed because of OpenSC build dependency on winscard.h
+	# Note: nss is needed, but it appears to be part of ubuntu by default.
 	# TODO: Add libiconv-dev
 	# TODO: Consider adding gcc, make, etc..., but should already be there...
 	local -a pkgs=(
-		openssl libnss libssl-dev
+		openssl libssl-dev
 		git autoconf automake m4 libtool
 		gettext libexpat1-dev
 		libpcsclite-dev
