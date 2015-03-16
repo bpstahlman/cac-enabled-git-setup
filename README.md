@@ -7,9 +7,10 @@ Bash script that builds a version of Git capable of using a CAC card for authent
 # Before you start...
 - A government-issued _Common Access Card_ (CAC) with drivers installed.
 - If you're running under...
-  - ...Linux or OS X, you'll need to install the packages listed under the section entitled *Package Prerequisites*.
   - ...Windows, you'll need a basic Cygwin installation, augmented with wget (which is not part of the Cygwin default install, but may be obtained from the *Web* package).
 **Note**: Cygwin users will also need the packages listed under *Package Prerequisites*, but this script will install them automatically.
+  - ...Ubuntu Linux, you shouldn't need to install any prerequisites, as this script will handle it.
+  - ...Non-Ubuntu Linux, you'll need to install the packages listed under the section entitled *Package Prerequisites*.
 
 
 # Package Prerequisites
@@ -25,7 +26,7 @@ Bash script that builds a version of Git capable of using a CAC card for authent
 - _**Libraries**_
      - libnss (Network Security Services)
      - libopenssl, libssl-dev
-    - _**Misc**_
+- _**Misc**_
      - gettext
      - libexpat1-dev
      - libpcsclite-dev
@@ -46,12 +47,13 @@ Bash script that builds a version of Git capable of using a CAC card for authent
     
 #### 2.	Open a terminal.
 > Cygwin users should have a link to *Cygwin Terminal* on their desktops and in the Windows *Start Menu*.
+
 #### 3.	Create an empty directory and add the latest version of this script to it.
 **Note:** If you already have Git, the following command will create the directory and add the script automatically...
 
         git clone --config core.autocrlf=input https://github.com/bpstahlman/cac-enabled-git-setup.git
 
-    ...otherwise, you can use the "Download ZIP" option in Github, and manually extract the script file to the directory you've created. 
+...otherwise, you can use the "Download ZIP" option in Github, and manually extract the script file to the directory you've created. 
 > **Caveat to Windows Users:** The script will not run if its line endings are converted from "UNIX" to "DOS". Neither of the methods mentioned above should perform such a conversion, but it's something to be aware of if you obtain the script some other way...
 
 #### 4.	Make sure the script is "executable".
@@ -68,7 +70,7 @@ Bash script that builds a version of Git capable of using a CAC card for authent
 ### Username/Password/Pin prompting
 Unless you unset environment variable `GIT_INHIBIT_ASKPASS` (set in the startup script installed to `/etc/profile.d/cac-enabled-git.sh`), the custom Git built by this script will perform all password prompting in the console.
 > **Explanation:** By default, Git will attempt to bring up a _Tk_ dialog for such prompts, but if you don't have an X server on your system, the attempt will fail with error. A patch applied to the Git source changes the default behavior to use a console prompt, but only if `GIT_INHIBIT_ASKPASS` is set.
-> **Note:** You could alternatively null the GIT_ASKPASS environment variable to accomplish the same thing. In fact, `GIT_INHIBIT_ASKPASS` may be removed in a future version of this script.
+> **Note:** You could alternatively null the `GIT_ASKPASS` environment variable to accomplish the same thing. In fact, `GIT_INHIBIT_ASKPASS` may be removed in a future version of this script.
 
 If you have a working X server and wish to use GUI password prompts, simply set `GIT_INHIBIT_ASKPASS=no` (or unset altogether), and ensure `GIT_ASKPASS` is not set to an empty string.
 
