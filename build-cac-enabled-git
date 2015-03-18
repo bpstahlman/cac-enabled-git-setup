@@ -660,7 +660,7 @@ create_certs() {
 	# Note: Could also use the bundle(s) supplied with openssl (e.g., in /usr/ssl/certs), but the location is too
 	# unpredictable...
 	# Use cat or wget as appropriate to get the ca bundle.
-	$([[ ${Opts[ca-bundle-in]} == http* ]] && echo wget || echo cat) ${Opts[ca-bundle-in]} >"${Opts[ca-bundle-out]}"
+	$([[ ${Opts[ca-bundle-in]} == http* ]] && echo wget -O- || echo cat) ${Opts[ca-bundle-in]} >"${Opts[ca-bundle-out]}"
 
 	# Append the DOD root certs (after converting from .p7b to .pem format)
 	local certs=(rel3_dodroot_2048 dodeca dodeca2)
