@@ -637,7 +637,8 @@ build_opensc() {
 		./bootstrap && ./configure && make && $Make_install
 		popd
 	done
-	if [[ $System_type != cygwin* ]]; then
+	# Caveat: Not all linux systems have ldconfig: e.g., OS X apparently does not.
+	if [[ $System_type != cygwin* ]] && which ldconfig >/dev/null 2>&1; then
 		# Workaround for issue (at least in Ubuntu) whereby ldconfig cache is not rebuilt properly.
 		# Explanation: opensc build script invokes `ldconfig -n /usr/local/lib', which doesn't add the libopensc shared
 		# lib (apparently because of the -n option - not sure why it's used).
