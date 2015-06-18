@@ -713,7 +713,7 @@ patch_curl() {
 build_curl() {
 	pushd curl
 	# Note: curl from github doesn't come with a configure script.
-	./buildconf && ./configure --with-ca-bundle="${Opts[ca-bundle-out]}" && make && $Make_install
+	./buildconf && ./configure --enable-threaded_resolver --with-ca-bundle="${Opts[ca-bundle-out]}" && make && $Make_install
 	popd
 }
 configure_openssl_conf() {
