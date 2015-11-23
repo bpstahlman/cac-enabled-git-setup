@@ -19,8 +19,10 @@ Sys_git=/usr/bin/git
 Card_id=
 # Facilitate skipping install step when --no-install specified
 Make_install="make install"
-# System type: cygwin32 | cygwin64 | linux
+# Supported system types: cygwin32 | cygwin64 | linux
+# Supported operating systems: cygwin | ubuntu | debian | centos | redhat | fedora
 System_type=
+OS=
 
 declare -i Step_idx=0
 # Container for steps specified with --skip-step
@@ -346,29 +348,64 @@ detect_system() {
 	local -l machine=$(uname -m)
 	local -l version=$(uname -v)
 
-	# Default to generic Linux.
-	System_type=linux
-
-	# Check system (kernel)
-	# Note: -o would be more convenient, but it's an illegal option on some systems (e.g., OS X);
-	# -s is valid on *all* systems, -m is valid on Cygwin.
-	case $system in
-		*cygwin*)
-			# Check machine type (32/64-bit)
-			case $machine in
-				x86_64)
-					System_type=cygwin64;;
-				*)
-					# Default to safest choice.
-					System_type=cygwin32;;
-			esac;;
-		*linux*)
-			case $version in
-				*ubuntu*)
-					# Don't really care about machine type (confirm)
-					System_type=ubuntu;;
-			esac;;
-	esac
+	if grep -iq cygwin <<< ${system}
+	then
+		if [[ $machine == x86_64 ]]
+		then
+			System_type='cygwin64'
+		else
+			System_type='cygwin32'
+		fi
+		Installer=
+	elif type sw_vers >/dev/null 2>&1  && [[ `sw_vers` == *"Mac"* ]]
+	then
+		System_type='mac'
+		OS='macos'
+		Installer=
+	else
+		C1=`echo /etc/*_ver*`
+		C2=`echo /etc/*-rel*`
+		C3=`cat /etc/*_ver* 2>/dev/null`
+		C4=`cat /etc/*-rel* 2>/dev/null`
+		CONTENT="${C1} ${C2} ${C3} ${C4}"
+		if grep -iq Ubuntu <<< ${CONTENT}
+		then
+			System_type='linux'
+			OS='ubuntu'
+			Installer='apt-get'
+		elif grep -iq Debian <<< ${CONTENT}
+		then
+			System_type='linux'
+			OS='debian'
+			Installer='apt-get'
+		elif grep -iq CentOS <<< ${CONTENT}
+		then
+			System_type='linux'
+			OS='centos'
+			Installer='yum'
+		elif grep -iq 'Red Hat' <<< ${CONTENT}
+		then
+			System_type='linux'
+			OS='redhat'
+			Installer='yum'
+		elif grep -iq 'Fedora' <<< ${CONTENT}
+		then
+			System_type='linux'
+			OS='fedora'
+			Installer='yum'
+		else
+			System_type='unknown'
+			OS='other'
+			Installer=
+		fi
+		if [[ $Installer == yum ]]
+		then
+			if which dnf
+			then
+				Installer='dnf'
+			fi
+		fi
+	fi
 }
 # Assumption: errexit option has not yet been enabled.
 process_opt() {
@@ -561,7 +598,15 @@ do_prereq_cygwin32() {
 do_prereq_cygwin64() {
 	do_prereq_cygwin "$@"
 }
-do_prereq_ubuntu() {
+do_prereq_mac() {
+	log --ts "Mac OS X is not supported...exiting"
+	exit -1
+}
+do_prereq_unknown() {
+	log --ts "Unknown OS is not supported...exiting"
+	exit -1
+}
+do_prereq_linux() {
 	# Notes:
 	# git needed to obtain source
 	# libssl-dev needed so that OpenSSL can be found
@@ -569,33 +614,27 @@ do_prereq_ubuntu() {
 	# Note: nss is needed, but it appears to be part of ubuntu by default.
 	# TODO: Add libiconv-dev
 	# TODO: Consider adding gcc, make, etc..., but should already be there...
-	local -a pkgs=(
-		openssl libssl-dev
-		git autoconf automake m4 libtool
-		gettext libexpat1-dev
-		libpcsclite-dev
-	)
-	log --ts "Installing ubuntu prerequisite packages: ${pkgs[@]}..."
+	if [[ $OS == centos || $OS == redhat || $OS == fedora ]]
+	then
+		local -a pkgs=(
+			openssl wget patch openssl-devel
+			git autoconf automake m4 libtool
+			gettext pcsc-lite-devel expat-devel
+			perl-CPAN
+		)
+	else
+		local -a pkgs=(
+			openssl libssl-dev wget pkg-config
+			git autoconf automake m4 libtool
+			gettext libexpat1-dev
+			libpcsclite-dev
+		)
+	fi
+	log --ts "Installing linux prerequisite packages: ${pkgs[@]}..."
 	# Assumption: Script is running with root privileges (e.g., sudo).
 	# Note: Suppress tty prompt.
-	apt-get install -y "${pkgs[@]}"
-	log --ts "Finished installing ubuntu prerequisite packages..."
-}
-do_prereq_linux() {
-	# Generic Linux
-	# TODO: Inform user of what packages are needed, and present him with options: e.g.,
-	# 1) I have them. Proceed.
-	# 2) I don't have them. Abort.
-	# TODO: Remove stuff below...
-	# Design Decision: For now, just check the easy stuff: things that can be checked without
-	# autoconf, etc...
-	local -a exes=(git make patch)
-	for exe in "${exes[@]}"; do
-		if ! which "$exe" &>/dev/null; then
-			error "Prerequisite not met: Cannot proceed without a working \`$exe'. Use your" \
-			"package manager to install, then re-run."
-		fi
-	done
+	${Installer} install -y "${pkgs[@]}"
+	log --ts "Finished installing linux prerequisite packages..."
 }
 # Make sure there's nothing in the environment (e.g., from a previous run), that could mess us up (e.g., GIT_SSL_<...>
 # vars that could cause the vanilla git to attempt to use the CAC card).
@@ -937,6 +976,7 @@ install_env_script() {
 }
 
 detect_system
+log --ts "System type is ${System_type}, OS is ${OS}, and installer is ${Installer}..."
 process_opt "$@"
 post_process_opt
 clean_env
