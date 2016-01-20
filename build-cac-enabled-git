@@ -667,7 +667,15 @@ build_opensc() {
 		# Caveat: If we don't set PKG_CONFIG_PATH, the libp11 we're about to build won't be found in subsequent build steps.
 		export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 	fi
-	local libs=(libp11 engine_pkcs11 OpenSC)
+	
+	# As of 20 JAN 2016 the libp11 git repo does not include a bootstrap script, but requires
+	# autoconf to be run.
+	# TODO: Watch for libp11 updates
+	pushd "libp11"
+	autoconf -vfi && ./configure && make && $Make_install
+	popd
+	
+	local libs=(engine_pkcs11 OpenSC)
 	for d in "${libs[@]}"; do
 		pushd "$d"
 		# TODO: Make sure error handled as desired (with effective popd).
